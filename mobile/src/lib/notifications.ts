@@ -4,9 +4,20 @@ import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import { postJson } from "./http";
 import { getOrCreateMobileDeviceId } from "./phone-access";
+import { getNotificationsMuted } from "./notifications-prefs";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => {
+    // User-side mute wins over everything — drop the notification entirely.
+    if (getNotificationsMuted()) {
+      return {
+        shouldShowAlert: false,
+        shouldShowBanner: false,
+        shouldShowList: false,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      };
+    }
     // Don't pop a banner over the app the user is currently looking at —
     // they're already watching their reply stream in. Still log it to the
     // notification list so they can find it later.

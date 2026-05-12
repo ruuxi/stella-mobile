@@ -10,6 +10,7 @@ import { hasMobileConfig } from "../src/config/env";
 import { registerForPushNotifications } from "../src/lib/notifications";
 import { loadGuestMode, isGuest, setGuestMode } from "../src/lib/guest-mode";
 import { loadAiConsent } from "../src/lib/ai-consent";
+import { loadNotificationsMuted } from "../src/lib/notifications-prefs";
 import {
   criticalStellaFontAssets,
   deferredStellaFontAssets,
@@ -36,9 +37,11 @@ function AuthenticatedLayout() {
   const [guestReady, setGuestReady] = useState(false);
 
   useEffect(() => {
-    void Promise.all([loadGuestMode(), loadAiConsent()]).then(() =>
-      setGuestReady(true),
-    );
+    void Promise.all([
+      loadGuestMode(),
+      loadAiConsent(),
+      loadNotificationsMuted(),
+    ]).then(() => setGuestReady(true));
   }, []);
 
   useEffect(() => {
