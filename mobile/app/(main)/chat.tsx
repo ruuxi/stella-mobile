@@ -1,5 +1,6 @@
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
   Alert,
   Animated,
   Keyboard,
@@ -8,6 +9,7 @@ import {
   NativeSyntheticEvent,
   Platform,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -163,6 +165,37 @@ const copyAssistantMessage = (text: string) => {
   });
 };
 
+const shareAssistantMessage = (text: string) => {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  void Share.share({ message: trimmed }).catch(() => {
+    // User cancelled or the share sheet was unavailable; nothing to do.
+  });
+};
+
+const openAssistantActions = (text: string) => {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  if (Platform.OS === "ios") {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        options: ["Copy", "Share\u2026", "Cancel"],
+        cancelButtonIndex: 2,
+      },
+      (index) => {
+        if (index === 0) copyAssistantMessage(trimmed);
+        else if (index === 1) shareAssistantMessage(trimmed);
+      },
+    );
+    return;
+  }
+  Alert.alert("Message", undefined, [
+    { text: "Copy", onPress: () => copyAssistantMessage(trimmed) },
+    { text: "Share", onPress: () => shareAssistantMessage(trimmed) },
+    { text: "Cancel", style: "cancel" },
+  ]);
+};
+
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
@@ -195,9 +228,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
   }
   return (
     <Pressable
-      onLongPress={() => copyAssistantMessage(item.text)}
+      onLongPress={() => openAssistantActions(item.text)}
       delayLongPress={350}
-      accessibilityLabel="Long press to copy this reply"
+      accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
     >
       <Text style={styles.assistantText} selectable>
