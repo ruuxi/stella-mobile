@@ -4,8 +4,10 @@ import {
   ActivityIndicator,
   BackHandler,
   Linking,
+  Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -200,6 +202,7 @@ function AuthenticatedStellaScreen() {
   const [pairingCode, setPairingCode] = useState(routeCode);
   const [isPairing, setIsPairing] = useState(false);
   const [isScanningQr, setIsScanningQr] = useState(false);
+  const [isPairSheetOpen, setIsPairSheetOpen] = useState(false);
   const [pairedDesktops, setPairedDesktops] = useState<StoredPhoneAccess[]>(
     [],
   );
@@ -450,11 +453,7 @@ function AuthenticatedStellaScreen() {
   if (screenState.type === "unavailable") {
     const showRetry = Boolean(preferredAccess);
     return (
-      <ScrollView
-        style={styles.screen}
-        contentContainerStyle={styles.unavailableScroll}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View style={styles.unavailableView}>
         <View style={styles.statusBlock}>
           <DesktopTabAnimation />
           <Text style={styles.title}>{screenState.title}</Text>
@@ -466,55 +465,17 @@ function AuthenticatedStellaScreen() {
           {screenState.error && (
             <Text style={styles.errorText}>{screenState.error}</Text>
           )}
-          {preferredAccess && (
-            <Text style={styles.caption}>
-              Want to connect to a different computer? Enter a new code below.
-            </Text>
-          )}
         </View>
-
-        {pairedDesktops.length > 1 ? (
-          <View style={styles.switchDesktopRow}>
-            <Text style={styles.inputLabel}>Paired computers</Text>
-            <View style={styles.switchDesktopChips}>
-              {pairedDesktops.map((d) => {
-                const platform = desktopPlatforms[d.desktopDeviceId] ?? null;
-                const samePlatformCount = pairedDesktops.filter(
-                  (other) =>
-                    (desktopPlatforms[other.desktopDeviceId] ?? null) ===
-                    platform,
-                ).length;
-                return (
-                  <Pressable
-                    key={d.desktopDeviceId}
-                    onPress={() => {
-                      void setPreferredDesktopDeviceId(d.desktopDeviceId);
-                      void refreshBridge(d);
-                    }}
-                    accessibilityLabel={`Switch to ${desktopChipLabel(d, platform, true)}`}
-                    style={({ pressed }) => [
-                      styles.desktopChip,
-                      pressed && styles.desktopChipPressed,
-                      preferredAccess?.desktopDeviceId === d.desktopDeviceId
-                        ? styles.desktopChipActive
-                        : null,
-                    ]}
-                  >
-                    <Text style={styles.desktopChipText}>
-                      {desktopChipLabel(d, platform, samePlatformCount > 1)}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-        ) : null}
 
         <View style={styles.actionRow}>
           <Pressable
-            onPress={() => setIsScanningQr(true)}
+            onPress={() => setIsPairSheetOpen(true)}
             disabled={isPairing}
-            accessibilityLabel="Scan pairing QR code"
+            accessibilityLabel={
+              preferredAccess
+                ? "Pair another computer"
+                : "Start pairing a computer"
+            }
             style={({ pressed }) => [
               styles.actionButton,
               pressed && styles.actionButtonPressed,
@@ -522,7 +483,7 @@ function AuthenticatedStellaScreen() {
             ]}
           >
             <Text style={styles.actionButtonText}>
-              {preferredAccess ? "Pair another computer" : "Scan QR code"}
+              {preferredAccess ? "Pair another computer" : "Pair phone"}
             </Text>
           </Pressable>
 
@@ -540,53 +501,152 @@ function AuthenticatedStellaScreen() {
           )}
         </View>
 
-        <View style={styles.manualCodeBlock}>
-          <Text style={styles.manualCodeLabel}>or enter code manually</Text>
-          <GlassCard radius={14} ringed>
-            <TextInput
-              autoCapitalize="characters"
-              autoCorrect={false}
-              keyboardType="ascii-capable"
-              maxLength={PAIRING_CODE_LENGTH}
-              onChangeText={(value) =>
-                setPairingCode(normalizePairingCode(value))
-              }
-              onSubmitEditing={() => void pairPhone()}
-              placeholder="ABCDEFGH"
-              placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
-              returnKeyType="go"
-              style={styles.manualCodeInput}
-              textContentType="oneTimeCode"
-              value={pairingCode}
-            />
-          </GlassCard>
-          <Pressable
-            onPress={() => void pairPhone()}
-            disabled={isPairing || pairingCode.length === 0}
-            accessibilityLabel="Submit pairing code"
-            style={({ pressed }) => [
-              styles.manualCodeSubmit,
-              pressed && styles.manualCodeSubmitPressed,
-              (isPairing || pairingCode.length === 0) &&
-                styles.manualCodeSubmitDisabled,
-            ]}
-          >
-            <Text style={styles.manualCodeSubmitText}>
-              {isPairing ? "Pairing\u2026" : "Pair with code"}
-            </Text>
-          </Pressable>
-        </View>
+        <Modal
+          visible={isPairSheetOpen}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setIsPairSheetOpen(false)}
+        >
+          <SafeAreaView style={styles.sheetSafe}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>
+                {preferredAccess ? "Pair another computer" : "Pair your phone"}
+              </Text>
+              <Pressable
+                onPress={() => setIsPairSheetOpen(false)}
+                accessibilityLabel="Close pair sheet"
+                style={styles.sheetClose}
+              >
+                <Text style={styles.sheetCloseText}>Done</Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              contentContainerStyle={styles.sheetContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.sheetBody}>
+                Open Stella on your computer and scan the QR code shown on the
+                Pair phone screen. After this, your phone reconnects on its
+                own.
+              </Text>
+
+              {pairedDesktops.length > 1 ? (
+                <View style={styles.switchDesktopRow}>
+                  <Text style={styles.inputLabel}>Paired computers</Text>
+                  <View style={styles.switchDesktopChips}>
+                    {pairedDesktops.map((d) => {
+                      const platform =
+                        desktopPlatforms[d.desktopDeviceId] ?? null;
+                      const samePlatformCount = pairedDesktops.filter(
+                        (other) =>
+                          (desktopPlatforms[other.desktopDeviceId] ?? null) ===
+                          platform,
+                      ).length;
+                      return (
+                        <Pressable
+                          key={d.desktopDeviceId}
+                          onPress={() => {
+                            void setPreferredDesktopDeviceId(d.desktopDeviceId);
+                            setIsPairSheetOpen(false);
+                            void refreshBridge(d);
+                          }}
+                          accessibilityLabel={`Switch to ${desktopChipLabel(d, platform, true)}`}
+                          style={({ pressed }) => [
+                            styles.desktopChip,
+                            pressed && styles.desktopChipPressed,
+                            preferredAccess?.desktopDeviceId ===
+                              d.desktopDeviceId
+                              ? styles.desktopChipActive
+                              : null,
+                          ]}
+                        >
+                          <Text style={styles.desktopChipText}>
+                            {desktopChipLabel(
+                              d,
+                              platform,
+                              samePlatformCount > 1,
+                            )}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
+
+              <Pressable
+                onPress={() => setIsScanningQr(true)}
+                disabled={isPairing}
+                accessibilityLabel="Scan pairing QR code"
+                style={({ pressed }) => [
+                  styles.actionButton,
+                  pressed && styles.actionButtonPressed,
+                  isPairing && styles.actionButtonDisabled,
+                ]}
+              >
+                <Text style={styles.actionButtonText}>Scan QR code</Text>
+              </Pressable>
+
+              <View style={styles.manualCodeBlock}>
+                <Text style={styles.manualCodeLabel}>
+                  or enter code manually
+                </Text>
+                <GlassCard radius={14} ringed>
+                  <TextInput
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    keyboardType="ascii-capable"
+                    maxLength={PAIRING_CODE_LENGTH}
+                    onChangeText={(value) =>
+                      setPairingCode(normalizePairingCode(value))
+                    }
+                    onSubmitEditing={() => {
+                      setIsPairSheetOpen(false);
+                      void pairPhone();
+                    }}
+                    placeholder="ABCDEFGH"
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
+                    returnKeyType="go"
+                    style={styles.manualCodeInput}
+                    textContentType="oneTimeCode"
+                    value={pairingCode}
+                  />
+                </GlassCard>
+                <Pressable
+                  onPress={() => {
+                    setIsPairSheetOpen(false);
+                    void pairPhone();
+                  }}
+                  disabled={isPairing || pairingCode.length === 0}
+                  accessibilityLabel="Submit pairing code"
+                  style={({ pressed }) => [
+                    styles.manualCodeSubmit,
+                    pressed && styles.manualCodeSubmitPressed,
+                    (isPairing || pairingCode.length === 0) &&
+                      styles.manualCodeSubmitDisabled,
+                  ]}
+                >
+                  <Text style={styles.manualCodeSubmitText}>
+                    {isPairing ? "Pairing\u2026" : "Pair with code"}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
 
         <PairingQrScanner
           visible={isScanningQr}
           onClose={() => setIsScanningQr(false)}
           onCodeScanned={(code) => {
             setIsScanningQr(false);
+            setIsPairSheetOpen(false);
             setPairingCode(code);
             void pairPhone(code);
           }}
         />
-      </ScrollView>
+      </View>
     );
   }
 
@@ -658,6 +718,61 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     flexGrow: 1,
     gap: 12,
     paddingBottom: 28,
+  },
+  unavailableView: {
+    alignItems: "center",
+    flex: 1,
+    gap: 18,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  sheetSafe: {
+    backgroundColor: colors.background,
+    flex: 1,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    backgroundColor: colors.border,
+    borderRadius: 3,
+    height: 5,
+    marginTop: 8,
+    width: 40,
+  },
+  sheetHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  sheetTitle: {
+    color: colors.text,
+    flex: 1,
+    fontFamily: fonts.sans.semiBold,
+    fontSize: 18,
+    letterSpacing: -0.4,
+  },
+  sheetClose: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  sheetCloseText: {
+    color: colors.accent,
+    fontFamily: fonts.sans.semiBold,
+    fontSize: 16,
+  },
+  sheetContent: {
+    gap: 18,
+    paddingBottom: 36,
+    paddingHorizontal: 24,
+    paddingTop: 16,
+  },
+  sheetBody: {
+    color: colors.textMuted,
+    fontFamily: fonts.sans.regular,
+    fontSize: 15,
+    letterSpacing: -0.2,
+    lineHeight: 22,
   },
   centered: {
     alignItems: "center",
