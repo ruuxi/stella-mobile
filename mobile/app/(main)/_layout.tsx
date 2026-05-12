@@ -15,7 +15,8 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { triggerStellaRefresh } from "../../src/lib/stella-refresh";
+import { authClient } from "../../src/lib/auth-client";
+import { isGuest } from "../../src/lib/guest-mode";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   interpolate,
@@ -65,9 +66,27 @@ function Sidebar({
   tabs: typeof TABS;
 }) {
   const insets = useSafeAreaInsets();
+  const session = authClient.useSession();
+  const user = session.data?.user;
+  const guest = isGuest();
+  const headerName = !guest && user ? (user.name?.trim() || user.email || "Account") : null;
+  const headerSub = !guest && user && user.name?.trim() ? user.email : null;
   return (
     <View style={[styles.sidebar, { paddingTop: insets.top + 12, paddingBottom: insets.bottom }]}>
-      <Text style={styles.brand}>Stella</Text>
+      {headerName ? (
+        <View style={styles.identityBlock}>
+          <Text style={styles.identityName} numberOfLines={1}>
+            {headerName}
+          </Text>
+          {headerSub ? (
+            <Text style={styles.identitySub} numberOfLines={1}>
+              {headerSub}
+            </Text>
+          ) : null}
+        </View>
+      ) : (
+        <Text style={styles.brand}>Stella</Text>
+      )}
       <View style={styles.nav}>
         {tabs.map((tab) => {
           const active = activeTab === tab.id;
@@ -228,6 +247,7 @@ export default function MainLayout() {
               <Pressable
                 onPress={openSidebar}
                 hitSlop={8}
+                accessibilityLabel="Open navigation"
                 style={styles.hamburger}
               >
                 <Feather name="menu" size={22} color={colors.text} />
@@ -236,17 +256,7 @@ export default function MainLayout() {
             <View style={styles.topBarCenter} pointerEvents="box-none">
               {activeTab === "chat" ? <ChatModePill /> : null}
             </View>
-            <View style={styles.topBarSide}>
-              {activeTab === "stella" ? (
-                <Pressable
-                  onPress={triggerStellaRefresh}
-                  hitSlop={8}
-                  style={styles.topBarAction}
-                >
-                  <Feather name="refresh-cw" size={18} color={colors.textMuted} />
-                </Pressable>
-              ) : null}
-            </View>
+            <View style={styles.topBarSide} />
           </View>
 
           <View style={styles.content}>
@@ -373,6 +383,23 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 20,
     textTransform: "uppercase",
+  },
+  identityBlock: {
+    gap: 2,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+  },
+  identityName: {
+    color: colors.text,
+    fontFamily: fonts.sans.semiBold,
+    fontSize: 16,
+    letterSpacing: -0.3,
+  },
+  identitySub: {
+    color: colors.textMuted,
+    fontFamily: fonts.sans.regular,
+    fontSize: 12,
+    letterSpacing: -0.1,
   },
   nav: {
     gap: 2,
