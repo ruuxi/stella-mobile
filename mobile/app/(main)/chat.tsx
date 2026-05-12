@@ -25,7 +25,9 @@ import Reanimated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Feather from "@expo/vector-icons/Feather";
 import {
+  loadComputerChatMessages,
   loadOfflineChatMessages,
+  saveComputerChatMessages,
   saveOfflineChatMessages,
 } from "../../src/lib/offline-chat-storage";
 import { postStream, postStreamAnonymous } from "../../src/lib/http";
@@ -231,6 +233,7 @@ export default function ChatScreen() {
   );
 
   const [computerMessages, setComputerMessages] = useState<ChatMessage[]>([]);
+  const [computerStorageLoaded, setComputerStorageLoaded] = useState(false);
   const [computerDraft, setComputerDraft] = useState("");
   const [computerSending, setComputerSending] = useState(false);
   const computerListRef = useRef<FlashListRef<ChatMessage>>(null);
@@ -340,12 +343,21 @@ export default function ChatScreen() {
       setMessages(loaded);
       setStorageLoaded(true);
     });
+    void loadComputerChatMessages().then((loaded) => {
+      setComputerMessages(loaded);
+      setComputerStorageLoaded(true);
+    });
   }, []);
 
   useEffect(() => {
     if (!storageLoaded) return;
     void saveOfflineChatMessages(messages);
   }, [messages, storageLoaded]);
+
+  useEffect(() => {
+    if (!computerStorageLoaded) return;
+    void saveComputerChatMessages(computerMessages);
+  }, [computerMessages, computerStorageLoaded]);
 
   useEffect(() => {
     if (messages.length === 0) {

@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ChatMessage } from "../types";
 
-const STORAGE_KEY = "stella-mobile-offline-chat-v1";
+const OFFLINE_STORAGE_KEY = "stella-mobile-offline-chat-v1";
+const COMPUTER_STORAGE_KEY = "stella-mobile-computer-chat-v1";
 const MAX_MESSAGES = 200;
 
 function parseRow(row: unknown): ChatMessage | null {
@@ -26,9 +27,9 @@ function parseRow(row: unknown): ChatMessage | null {
   };
 }
 
-export async function loadOfflineChatMessages(): Promise<ChatMessage[]> {
+async function loadMessages(storageKey: string): Promise<ChatMessage[]> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    const raw = await AsyncStorage.getItem(storageKey);
     if (!raw) {
       return [];
     }
@@ -49,9 +50,19 @@ export async function loadOfflineChatMessages(): Promise<ChatMessage[]> {
   }
 }
 
-export async function saveOfflineChatMessages(
+async function saveMessages(
+  storageKey: string,
   messages: ChatMessage[],
 ): Promise<void> {
   const trimmed = messages.slice(-MAX_MESSAGES);
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+  await AsyncStorage.setItem(storageKey, JSON.stringify(trimmed));
 }
+
+export const loadOfflineChatMessages = () => loadMessages(OFFLINE_STORAGE_KEY);
+export const saveOfflineChatMessages = (messages: ChatMessage[]) =>
+  saveMessages(OFFLINE_STORAGE_KEY, messages);
+
+export const loadComputerChatMessages = () =>
+  loadMessages(COMPUTER_STORAGE_KEY);
+export const saveComputerChatMessages = (messages: ChatMessage[]) =>
+  saveMessages(COMPUTER_STORAGE_KEY, messages);
