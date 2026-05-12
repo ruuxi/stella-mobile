@@ -1,17 +1,24 @@
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import { postJson } from "./http";
+import { getOrCreateMobileDeviceId } from "./phone-access";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async () => {
+    // Don't pop a banner over the app the user is currently looking at —
+    // they're already watching their reply stream in. Still log it to the
+    // notification list so they can find it later.
+    const isForeground = AppState.currentState === "active";
+    return {
+      shouldShowAlert: !isForeground,
+      shouldShowBanner: !isForeground,
+      shouldShowList: true,
+      shouldPlaySound: !isForeground,
+      shouldSetBadge: false,
+    };
+  },
 });
 
 async function getExpoPushToken(): Promise<string | null> {
@@ -51,7 +58,12 @@ export async function registerForPushNotifications(): Promise<void> {
     const token = await getExpoPushToken();
     if (!token) return;
 
-    await postJson("/api/mobile/push-token", { token, platform: Platform.OS });
+    const mobileDeviceId = await getOrCreateMobileDeviceId();
+    await postJson("/api/mobile/push-token", {
+      token,
+      platform: Platform.OS,
+      mobileDeviceId,
+    });
     registered = true;
   } catch {
     // Best-effort — don't block the app if registration fails.
