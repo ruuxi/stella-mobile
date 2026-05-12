@@ -19,11 +19,15 @@ function parseRow(row: unknown): ChatMessage | null {
   if (typeof o.text !== "string") {
     return null;
   }
+  const thumbnailUris = Array.isArray(o.thumbnailUris)
+    ? o.thumbnailUris.filter((v): v is string => typeof v === "string")
+    : [];
   return {
     id: o.id,
     role: o.role,
     text: o.text,
     ...(o.hasImage === true ? { hasImage: true } : {}),
+    ...(thumbnailUris.length > 0 ? { thumbnailUris } : {}),
   };
 }
 

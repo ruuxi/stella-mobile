@@ -49,7 +49,7 @@ import {
 } from "../../src/lib/desktop-connection";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { SpeechModule, speechAvailable, useSpeechRecognitionEvent } from "../../src/lib/speech";
-import { tapMedium, tapLight } from "../../src/lib/haptics";
+import { notifySuccess, tapMedium, tapLight } from "../../src/lib/haptics";
 import { type Colors } from "../../src/theme/colors";
 import { useColors } from "../../src/theme/theme-context";
 import { fadeHex } from "../../src/theme/oklch";
@@ -151,24 +151,35 @@ function FadeInMessage({ children }: { children: React.ReactNode }) {
 
 type ChatMessageRowProps = {
   item: ChatMessage;
-  /** When true, user bubbles may show the "Includes a photo" hint. */
-  showImageHint?: boolean;
   styles: ReturnType<typeof makeStyles>;
 };
 
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
-  showImageHint = false,
   styles,
 }: ChatMessageRowProps) {
   if (item.role === "user") {
+    const thumbs = item.thumbnailUris ?? [];
+    const showThumbs = thumbs.length > 0;
+    const showText = item.text.trim().length > 0;
     return (
       <View style={styles.userRow}>
         <View style={styles.userBubble}>
-          <Text style={styles.userText}>{item.text}</Text>
-          {showImageHint && item.hasImage ? (
-            <Text style={styles.userImageHint}>Includes a photo</Text>
+          {showThumbs ? (
+            <View
+              style={[styles.userThumbStrip, showText && styles.userThumbsAbove]}
+            >
+              {thumbs.slice(0, 3).map((uri) => (
+                <Image
+                  key={uri}
+                  source={{ uri }}
+                  style={styles.userThumbImage}
+                  contentFit="cover"
+                />
+              ))}
+            </View>
           ) : null}
+          {showText ? <Text style={styles.userText}>{item.text}</Text> : null}
         </View>
       </View>
     );
@@ -273,7 +284,7 @@ export default function ChatScreen() {
   const renderChatItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <FadeInMessage key={item.id}>
-        <ChatMessageRow item={item} showImageHint styles={styles} />
+        <ChatMessageRow item={item} styles={styles} />
       </FadeInMessage>
     ),
     [styles],
@@ -336,7 +347,9 @@ export default function ChatScreen() {
 
   // Composer expansion state — mirrors desktop Composer.tsx threshold logic
   const [expanded, setExpanded] = useState(false);
+  const [computerExpanded, setComputerExpanded] = useState(false);
   const hasMountedRef = useRef(false);
+  const hasMountedComputerRef = useRef(false);
 
   useEffect(() => {
     void loadOfflineChatMessages().then((loaded) => {
@@ -424,11 +437,13 @@ export default function ChatScreen() {
     const assets = attachments.slice();
 
     const displayText = text || (assets.length ? "Photo" : "");
+    const thumbs = assets.slice(0, 3).map((a) => a.uri);
     const userMsg: ChatMessage = {
       id: createId(),
       role: "user",
       text: displayText,
       hasImage: assets.length > 0,
+      ...(thumbs.length > 0 ? { thumbnailUris: thumbs } : {}),
     };
 
     setDraft("");
@@ -496,6 +511,7 @@ export default function ChatScreen() {
             : msg,
         ),
       );
+      notifySuccess();
     } catch (e) {
       setMessages((m) =>
         m.map((msg) =>
@@ -524,6 +540,10 @@ export default function ChatScreen() {
 
     setComputerDraft("");
     setComputerSending(true);
+    if (computerExpanded) {
+      LayoutAnimation.configureNext(LAYOUT_SPRING);
+      setComputerExpanded(false);
+    }
     setComputerMessages((m) => [...m, userMsg]);
     requestAnimationFrame(() =>
       computerListRef.current?.scrollToEnd({ animated: true }),
@@ -551,6 +571,7 @@ export default function ChatScreen() {
             : msg,
         ),
       );
+      notifySuccess();
     } catch (e) {
       setComputerMessages((m) =>
         m.map((msg) =>
@@ -585,6 +606,24 @@ export default function ChatScreen() {
       }
     },
     [expanded],
+  );
+
+  const handleComputerContentSizeChange = useCallback(
+    (e: { nativeEvent: { contentSize: { height: number } } }) => {
+      if (!hasMountedComputerRef.current) {
+        hasMountedComputerRef.current = true;
+        return;
+      }
+      const h = e.nativeEvent.contentSize.height;
+      if (!computerExpanded && h > EXPAND_THRESHOLD) {
+        LayoutAnimation.configureNext(LAYOUT_SPRING);
+        setComputerExpanded(true);
+      } else if (computerExpanded && h <= EXPAND_THRESHOLD) {
+        LayoutAnimation.configureNext(LAYOUT_SPRING);
+        setComputerExpanded(false);
+      }
+    },
+    [computerExpanded],
   );
 
   // --------------- Voice input ---------------
@@ -919,41 +958,151 @@ export default function ChatScreen() {
             )}
           </View>
 
-          {/* Computer Composer — simple pill, no image attachments */}
+          {/* Computer Composer — same pill/expand structure as Chat, sans images. */}
           <View style={styles.composerWrap}>
-            <GlassView style={[styles.shell, styles.shellPill]}>
-              <View style={styles.formPill}>
-                <TextInput
-                  scrollEnabled={false}
-                  onChangeText={setComputerDraft}
-                  blurOnSubmit
-                  onSubmitEditing={() => void sendComputer()}
-                  returnKeyType="send"
-                  placeholder={desktopState === "connected" ? "Ask Stella to do something" : "Connect to your computer first"}
-                  placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
-                  selectionColor={colors.accent}
-                  underlineColorAndroid="transparent"
-                  style={styles.inputPill}
-                  value={computerDraft}
-                  editable={desktopState === "connected"}
-                />
-                <Pressable
-                  onPress={() => void sendComputer()}
-                  disabled={!canSubmitComputer || desktopState !== "connected"}
-                  style={[
-                    styles.submitButton,
-                    (!canSubmitComputer || desktopState !== "connected") && styles.submitDisabled,
-                  ]}
-                  hitSlop={4}
-                >
-                  <Feather
-                    name="arrow-up"
-                    size={14}
-                    color={colors.accentForeground}
-                    strokeWidth={2.5}
+            <GlassView
+              style={[
+                styles.shell,
+                computerExpanded ? styles.shellExpanded : styles.shellPill,
+              ]}
+            >
+              {computerExpanded ? (
+                <View style={styles.formExpanded}>
+                  <TextInput
+                    multiline
+                    onChangeText={setComputerDraft}
+                    onContentSizeChange={handleComputerContentSizeChange}
+                    blurOnSubmit={false}
+                    placeholder={
+                      desktopState === "connected"
+                        ? "Ask Stella to do something"
+                        : "Connect to your computer first"
+                    }
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
+                    selectionColor={colors.accent}
+                    underlineColorAndroid="transparent"
+                    style={styles.inputExpanded}
+                    value={computerDraft}
+                    editable={desktopState === "connected"}
                   />
-                </Pressable>
-              </View>
+                  <View style={styles.toolbar}>
+                    <View style={styles.toolbarLeft} />
+                    <View style={styles.toolbarRight}>
+                      <Pressable
+                        onPress={() => void toggleVoice()}
+                        accessibilityLabel={
+                          isListening ? "Stop voice input" : "Start voice input"
+                        }
+                        style={[
+                          styles.micButton,
+                          isListening && styles.micButtonActive,
+                        ]}
+                        hitSlop={4}
+                      >
+                        <Feather
+                          name={isListening ? "mic-off" : "mic"}
+                          size={16}
+                          color={
+                            isListening
+                              ? colors.accentForeground
+                              : colors.textMuted
+                          }
+                        />
+                      </Pressable>
+                      <Pressable
+                        onPress={() => void sendComputer()}
+                        disabled={
+                          !canSubmitComputer || desktopState !== "connected"
+                        }
+                        accessibilityLabel="Send message to your computer"
+                        style={[
+                          styles.submitButton,
+                          (!canSubmitComputer ||
+                            desktopState !== "connected") &&
+                            styles.submitDisabled,
+                        ]}
+                        hitSlop={4}
+                      >
+                        <Feather
+                          name="arrow-up"
+                          size={14}
+                          color={colors.accentForeground}
+                          strokeWidth={2.5}
+                        />
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.formPill}>
+                  <TextInput
+                    scrollEnabled={false}
+                    onChangeText={setComputerDraft}
+                    onContentSizeChange={handleComputerContentSizeChange}
+                    blurOnSubmit
+                    onSubmitEditing={() => void sendComputer()}
+                    returnKeyType="send"
+                    placeholder={
+                      isListening
+                        ? "Listening\u2026"
+                        : desktopState === "connected"
+                          ? "Ask Stella to do something"
+                          : "Connect to your computer first"
+                    }
+                    placeholderTextColor={
+                      isListening
+                        ? colors.accent
+                        : fadeHex(colors.textMuted, 0.35)
+                    }
+                    selectionColor={colors.accent}
+                    underlineColorAndroid="transparent"
+                    style={styles.inputPill}
+                    value={computerDraft}
+                    editable={desktopState === "connected"}
+                  />
+                  {canSubmitComputer ? (
+                    <Pressable
+                      onPress={() => void sendComputer()}
+                      disabled={desktopState !== "connected"}
+                      accessibilityLabel="Send message to your computer"
+                      style={[
+                        styles.submitButton,
+                        desktopState !== "connected" && styles.submitDisabled,
+                      ]}
+                      hitSlop={4}
+                    >
+                      <Feather
+                        name="arrow-up"
+                        size={14}
+                        color={colors.accentForeground}
+                        strokeWidth={2.5}
+                      />
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      onPress={() => void toggleVoice()}
+                      accessibilityLabel={
+                        isListening ? "Stop voice input" : "Start voice input"
+                      }
+                      style={[
+                        styles.micButton,
+                        isListening && styles.micButtonActive,
+                      ]}
+                      hitSlop={4}
+                    >
+                      <Feather
+                        name={isListening ? "mic-off" : "mic"}
+                        size={16}
+                        color={
+                          isListening
+                            ? colors.accentForeground
+                            : colors.textMuted
+                        }
+                      />
+                    </Pressable>
+                  )}
+                </View>
+              )}
             </GlassView>
           </View>
         </>
@@ -1084,12 +1233,19 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     letterSpacing: 0.03 * 17,
     lineHeight: 17 * 1.45,
   },
-  userImageHint: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.regular,
-    fontSize: 13,
-    marginTop: 6,
-    opacity: 0.7,
+  userThumbStrip: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  userThumbsAbove: {
+    marginBottom: 8,
+  },
+  userThumbImage: {
+    backgroundColor: colors.muted,
+    borderRadius: 8,
+    height: 84,
+    width: 84,
   },
 
   // Assistant — desktop: .event-item.assistant
@@ -1227,16 +1383,12 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     gap: 8,
   },
 
-  // Desktop: .chat-composer-icon-button--add { 30x30, 1.5px dashed border }
   addButton: {
     alignItems: "center",
-    borderColor: colors.textMuted,
+    backgroundColor: colors.muted,
     borderRadius: 15,
-    borderStyle: "dashed",
-    borderWidth: 1.5,
     height: 30,
     justifyContent: "center",
-    opacity: 0.55,
     width: 30,
   },
 
@@ -1254,14 +1406,13 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   micButton: {
     alignItems: "center",
+    backgroundColor: colors.muted,
     borderRadius: 15,
     height: 30,
     justifyContent: "center",
-    opacity: 0.55,
     width: 30,
   },
   micButtonActive: {
     backgroundColor: colors.accent,
-    opacity: 1,
   },
 } as const);
