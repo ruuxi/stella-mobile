@@ -32,6 +32,7 @@ type LegalDoc = "terms" | "privacy" | null;
 const LEGAL_TITLES = { terms: "Terms of Service", privacy: "Privacy Policy" };
 
 const POLL_INTERVAL_MS = 2500;
+const RESEND_GRACE_MS = 15_000;
 
 type SubmitState =
   | { type: "idle" }
@@ -48,6 +49,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [submitState, setSubmitState] = useState<SubmitState>({ type: "idle" });
   const [activeLegal, setActiveLegal] = useState<LegalDoc>(null);
+  const [canResend, setCanResend] = useState(false);
   const cancelledRef = useRef(false);
 
   const continueAsGuest = async () => {
@@ -90,6 +92,22 @@ export default function LoginScreen() {
     } catch (error) {
       setSubmitState({ type: "error", message: userFacingError(error) });
     }
+  };
+
+  // Enable "resend" after a short grace once the link is sent.
+  useEffect(() => {
+    if (submitState.type !== "sent") {
+      setCanResend(false);
+      return;
+    }
+    setCanResend(false);
+    const id = setTimeout(() => setCanResend(true), RESEND_GRACE_MS);
+    return () => clearTimeout(id);
+  }, [submitState]);
+
+  const editEmail = () => {
+    cancelledRef.current = true;
+    setSubmitState({ type: "idle" });
   };
 
   // Poll for magic link verification.
@@ -171,7 +189,6 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <Pressable style={styles.hero} onPress={Keyboard.dismiss}>
-          <Text style={styles.kicker}>STELLA</Text>
           <Text style={styles.title}>
             Your assistant,{"\n"}pocket-sized.
           </Text>
@@ -215,9 +232,36 @@ export default function LoginScreen() {
         </Pressable>
 
         {submitState.type === "sent" ? (
-          <Text style={styles.successText}>
-            Check your inbox and tap the link — you'll be signed in automatically.
-          </Text>
+          <View style={styles.sentBlock}>
+            <Text style={styles.successText}>
+              Check your inbox and tap the link — you'll be signed in
+              automatically.
+            </Text>
+            <View style={styles.sentActions}>
+              <Pressable
+                onPress={editEmail}
+                accessibilityLabel="Use a different email"
+                style={({ pressed }) => [
+                  styles.inlineLink,
+                  pressed && styles.inlineLinkPressed,
+                ]}
+              >
+                <Text style={styles.inlineLinkText}>Use a different email</Text>
+              </Pressable>
+              {canResend ? (
+                <Pressable
+                  onPress={() => void sendMagicLink()}
+                  accessibilityLabel="Resend sign-in email"
+                  style={({ pressed }) => [
+                    styles.inlineLink,
+                    pressed && styles.inlineLinkPressed,
+                  ]}
+                >
+                  <Text style={styles.inlineLinkText}>Resend</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         ) : null}
 
         {submitState.type === "error" ? (
@@ -305,12 +349,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     justifyContent: "center",
     gap: 14,
   },
-  kicker: {
-    color: colors.textMuted,
-    fontFamily: fonts.mono.medium,
-    fontSize: 11,
-    letterSpacing: 1.5,
-  },
   title: {
     color: colors.text,
     fontFamily: fonts.display.light,
@@ -360,6 +398,26 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     fontSize: 17,
     letterSpacing: -0.3,
   },
+  sentBlock: {
+    gap: 10,
+  },
+  sentActions: {
+    flexDirection: "row",
+    gap: 18,
+    justifyContent: "center",
+  },
+  inlineLink: {
+    paddingVertical: 4,
+  },
+  inlineLinkPressed: {
+    opacity: 0.6,
+  },
+  inlineLinkText: {
+    color: colors.accent,
+    fontFamily: fonts.sans.medium,
+    fontSize: 14,
+    letterSpacing: -0.1,
+  },
   successText: {
     color: colors.ok,
     fontFamily: fonts.sans.regular,
@@ -387,7 +445,8 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   guestButton: {
     alignItems: "center",
-    paddingVertical: 14,
+    marginTop: 8,
+    paddingVertical: 16,
   },
   guestButtonPressed: {
     opacity: 0.6,
