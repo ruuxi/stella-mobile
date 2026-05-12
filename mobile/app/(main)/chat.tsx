@@ -17,6 +17,7 @@ import {
 import { FlashList, type FlashListRef, type ListRenderItemInfo } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import { GlassView } from "expo-glass-effect";
+import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import Reanimated, {
   useAnimatedKeyboard,
@@ -154,6 +155,14 @@ type ChatMessageRowProps = {
   styles: ReturnType<typeof makeStyles>;
 };
 
+const copyAssistantMessage = (text: string) => {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  void Clipboard.setStringAsync(trimmed).then((ok) => {
+    if (ok) notifySuccess();
+  });
+};
+
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
@@ -185,19 +194,28 @@ const ChatMessageRow = memo(function ChatMessageRow({
     );
   }
   return (
-    <View style={styles.assistantRow}>
-      <Text style={styles.assistantText}>{item.text}</Text>
-    </View>
+    <Pressable
+      onLongPress={() => copyAssistantMessage(item.text)}
+      delayLongPress={350}
+      accessibilityLabel="Long press to copy this reply"
+      style={styles.assistantRow}
+    >
+      <Text style={styles.assistantText} selectable>
+        {item.text}
+      </Text>
+    </Pressable>
   );
 });
 
 function ScrollToBottomFab({
   visible,
+  hasUnread,
   onPress,
   styles,
   colors,
 }: {
   visible: boolean;
+  hasUnread: boolean;
   onPress: () => void;
   styles: ReturnType<typeof makeStyles>;
   colors: Colors;
@@ -207,7 +225,11 @@ function ScrollToBottomFab({
   }
   return (
     <Pressable
-      accessibilityLabel="Scroll to latest messages"
+      accessibilityLabel={
+        hasUnread
+          ? "Scroll to latest messages, new replies below"
+          : "Scroll to latest messages"
+      }
       accessibilityRole="button"
       hitSlop={6}
       onPress={onPress}
@@ -217,6 +239,7 @@ function ScrollToBottomFab({
       ]}
     >
       <Feather name="chevron-down" size={20} color={colors.accent} strokeWidth={2.2} />
+      {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
     </Pressable>
   );
 }
@@ -251,6 +274,10 @@ export default function ChatScreen() {
 
   const [chatAwayFromBottom, setChatAwayFromBottom] = useState(false);
   const [computerAwayFromBottom, setComputerAwayFromBottom] = useState(false);
+  const [chatUnread, setChatUnread] = useState(false);
+  const [computerUnread, setComputerUnread] = useState(false);
+  const prevChatLengthRef = useRef(0);
+  const prevComputerLengthRef = useRef(0);
 
   const [showConsentModal, setShowConsentModal] = useState(false);
   const pendingSendRef = useRef<(() => void) | null>(null);
@@ -373,16 +400,38 @@ export default function ChatScreen() {
   }, [computerMessages, computerStorageLoaded]);
 
   useEffect(() => {
+    const grew = messages.length > prevChatLengthRef.current;
+    prevChatLengthRef.current = messages.length;
     if (messages.length === 0) {
       setChatAwayFromBottom(false);
+      setChatUnread(false);
+      return;
     }
-  }, [messages.length]);
+    if (grew && chatAwayFromBottom) {
+      setChatUnread(true);
+    }
+  }, [chatAwayFromBottom, messages.length]);
 
   useEffect(() => {
+    if (!chatAwayFromBottom) setChatUnread(false);
+  }, [chatAwayFromBottom]);
+
+  useEffect(() => {
+    const grew = computerMessages.length > prevComputerLengthRef.current;
+    prevComputerLengthRef.current = computerMessages.length;
     if (computerMessages.length === 0) {
       setComputerAwayFromBottom(false);
+      setComputerUnread(false);
+      return;
     }
-  }, [computerMessages.length]);
+    if (grew && computerAwayFromBottom) {
+      setComputerUnread(true);
+    }
+  }, [computerAwayFromBottom, computerMessages.length]);
+
+  useEffect(() => {
+    if (!computerAwayFromBottom) setComputerUnread(false);
+  }, [computerAwayFromBottom]);
 
   const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !sending;
 
@@ -734,6 +783,7 @@ export default function ChatScreen() {
                 />
                 <ScrollToBottomFab
                   visible={chatAwayFromBottom}
+                  hasUnread={chatUnread}
                   onPress={scrollToEnd}
                   styles={styles}
                   colors={colors}
@@ -762,6 +812,7 @@ export default function ChatScreen() {
                 />
                 <Pressable
                   style={styles.attachmentRemove}
+                  accessibilityLabel="Remove attached photo"
                   onPress={() => removeAttachment(asset.uri)}
                   hitSlop={4}
                 >
@@ -791,13 +842,21 @@ export default function ChatScreen() {
               />
               <View style={styles.toolbar}>
                 <View style={styles.toolbarLeft}>
-                  <Pressable style={styles.addButton} hitSlop={4} onPress={() => void pickImage()}>
+                  <Pressable
+                    style={styles.addButton}
+                    hitSlop={4}
+                    accessibilityLabel="Attach a photo"
+                    onPress={() => void pickImage()}
+                  >
                     <Feather name="plus" size={18} color={colors.textMuted} />
                   </Pressable>
                 </View>
                 <View style={styles.toolbarRight}>
                   <Pressable
                     onPress={() => void toggleVoice()}
+                    accessibilityLabel={
+                      isListening ? "Stop voice input" : "Start voice input"
+                    }
                     style={[styles.micButton, isListening && styles.micButtonActive]}
                     hitSlop={4}
                   >
@@ -810,6 +869,7 @@ export default function ChatScreen() {
                   <Pressable
                     onPress={() => void send()}
                     disabled={!canSubmit}
+                    accessibilityLabel="Send message"
                     style={[
                       styles.submitButton,
                       !canSubmit && styles.submitDisabled,
@@ -829,7 +889,12 @@ export default function ChatScreen() {
           ) : (
             /* ---- Pill: single row, input + submit ---- */
             <View style={styles.formPill}>
-              <Pressable style={styles.addButton} hitSlop={4} onPress={() => void pickImage()}>
+              <Pressable
+                style={styles.addButton}
+                hitSlop={4}
+                accessibilityLabel="Attach a photo"
+                onPress={() => void pickImage()}
+              >
                 <Feather name="plus" size={18} color={colors.textMuted} />
               </Pressable>
               <TextInput
@@ -850,6 +915,7 @@ export default function ChatScreen() {
               {canSubmit ? (
                 <Pressable
                   onPress={() => void send()}
+                  accessibilityLabel="Send message"
                   style={styles.submitButton}
                   hitSlop={4}
                 >
@@ -863,6 +929,9 @@ export default function ChatScreen() {
               ) : (
                 <Pressable
                   onPress={() => void toggleVoice()}
+                  accessibilityLabel={
+                    isListening ? "Stop voice input" : "Start voice input"
+                  }
                   style={[styles.micButton, isListening && styles.micButtonActive]}
                   hitSlop={4}
                 >
@@ -950,6 +1019,7 @@ export default function ChatScreen() {
                 />
                 <ScrollToBottomFab
                   visible={computerAwayFromBottom}
+                  hasUnread={computerUnread}
                   onPress={scrollComputerToEnd}
                   styles={styles}
                   colors={colors}
@@ -1188,6 +1258,17 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   scrollToBottomFabPressed: {
     opacity: 0.88,
+  },
+  scrollToBottomDot: {
+    backgroundColor: colors.accent,
+    borderColor: colors.surface,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    height: 10,
+    position: "absolute",
+    right: 6,
+    top: 6,
+    width: 10,
   },
   list: {
     paddingHorizontal: 20,
