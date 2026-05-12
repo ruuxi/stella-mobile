@@ -7,7 +7,10 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { authClient } from "../src/lib/auth-client";
 import { hasMobileConfig } from "../src/config/env";
-import { registerForPushNotifications } from "../src/lib/notifications";
+import {
+  installNotificationCategoriesAndListeners,
+  registerForPushNotifications,
+} from "../src/lib/notifications";
 import { loadGuestMode, isGuest, setGuestMode } from "../src/lib/guest-mode";
 import { loadAiConsent } from "../src/lib/ai-consent";
 import { loadNotificationsMuted } from "../src/lib/notifications-prefs";
@@ -42,6 +45,22 @@ function AuthenticatedLayout() {
       loadAiConsent(),
       loadNotificationsMuted(),
     ]).then(() => setGuestReady(true));
+  }, []);
+
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void installNotificationCategoriesAndListeners().then((unsubscribe) => {
+      if (cancelled) {
+        unsubscribe();
+        return;
+      }
+      dispose = unsubscribe;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
   }, []);
 
   useEffect(() => {

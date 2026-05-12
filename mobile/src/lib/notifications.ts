@@ -2,9 +2,13 @@ import { AppState, Platform } from "react-native";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
+import { router } from "expo-router";
 import { postJson } from "./http";
 import { getOrCreateMobileDeviceId } from "./phone-access";
 import { getNotificationsMuted } from "./notifications-prefs";
+import { setChatScreenMode } from "./chat-screen-mode";
+
+const COMPUTER_REPLY_CATEGORY = "computer_reply";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => {
@@ -79,6 +83,54 @@ export async function registerForPushNotifications(): Promise<void> {
   } catch {
     // Best-effort — don't block the app if registration fails.
   }
+}
+
+/**
+ * Wire up interactive notification categories and a tap handler that
+ * routes the user to the right surface when they engage with a push
+ * (either via the banner itself or one of the inline actions).
+ */
+export async function installNotificationCategoriesAndListeners(): Promise<() => void> {
+  try {
+    await Notifications.setNotificationCategoryAsync(COMPUTER_REPLY_CATEGORY, [
+      {
+        identifier: "open",
+        buttonTitle: "Open",
+        options: { opensAppToForeground: true },
+      },
+      {
+        identifier: "dismiss",
+        buttonTitle: "Dismiss",
+        options: { opensAppToForeground: false, isDestructive: false },
+      },
+    ]);
+  } catch {
+    // Best-effort; some platforms (Expo Go) just don't support categories.
+  }
+
+  const subscription = Notifications.addNotificationResponseReceivedListener(
+    (response) => {
+      const data = response.notification.request.content.data as
+        | { kind?: string }
+        | null
+        | undefined;
+      const actionId = response.actionIdentifier;
+      if (actionId === "dismiss") {
+        return;
+      }
+      if (data?.kind === "computer_reply") {
+        setChatScreenMode("computer");
+        try {
+          router.replace("/chat");
+        } catch {
+          // Router not yet mounted on cold start; the chat screen is the
+          // post-auth default landing anyway.
+        }
+      }
+    },
+  );
+
+  return () => subscription.remove();
 }
 
 /** Get the Expo push notification listener for navigation. */
