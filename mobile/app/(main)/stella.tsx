@@ -31,6 +31,7 @@ import { generateShimScript } from "../../src/lib/shim";
 import { registerStellaRefresh } from "../../src/lib/stella-refresh";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { DesktopTabAnimation } from "../../src/components/DesktopTabAnimation";
+import { PairingQrScanner } from "../../src/components/PairingQrScanner";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import { notifyError, notifySuccess } from "../../src/lib/haptics";
 import { type Colors } from "../../src/theme/colors";
@@ -181,6 +182,7 @@ function AuthenticatedStellaScreen() {
     useState<StoredPhoneAccess | null>(null);
   const [pairingCode, setPairingCode] = useState(routeCode);
   const [isPairing, setIsPairing] = useState(false);
+  const [isScanningQr, setIsScanningQr] = useState(false);
   const [pairedDesktops, setPairedDesktops] = useState<StoredPhoneAccess[]>(
     [],
   );
@@ -485,6 +487,18 @@ function AuthenticatedStellaScreen() {
             </Text>
           </Pressable>
 
+          <Pressable
+            onPress={() => setIsScanningQr(true)}
+            disabled={isPairing}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.secondaryButtonPressed,
+              isPairing && styles.actionButtonDisabled,
+            ]}
+          >
+            <Text style={styles.secondaryButtonText}>Scan QR code</Text>
+          </Pressable>
+
           {showRetry && (
             <Pressable
               onPress={() => void refreshBridge()}
@@ -497,6 +511,16 @@ function AuthenticatedStellaScreen() {
             </Pressable>
           )}
         </View>
+
+        <PairingQrScanner
+          visible={isScanningQr}
+          onClose={() => setIsScanningQr(false)}
+          onCodeScanned={(code) => {
+            setIsScanningQr(false);
+            setPairingCode(code);
+            void pairPhone(code);
+          }}
+        />
       </ScrollView>
     );
   }
