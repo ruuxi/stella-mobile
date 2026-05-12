@@ -189,7 +189,7 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <Pressable style={styles.hero} onPress={Keyboard.dismiss}>
-          <Text style={styles.title}>
+          <Text style={styles.title} maxFontSizeMultiplier={1.2}>
             Your assistant,{"\n"}pocket-sized.
           </Text>
           <Text style={styles.body}>

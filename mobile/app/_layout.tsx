@@ -11,6 +11,9 @@ import {
   installNotificationCategoriesAndListeners,
   registerForPushNotifications,
 } from "../src/lib/notifications";
+import { installTextDefaults } from "../src/lib/setup-text-defaults";
+
+installTextDefaults();
 import { loadGuestMode, isGuest, setGuestMode } from "../src/lib/guest-mode";
 import { loadAiConsent } from "../src/lib/ai-consent";
 import { loadNotificationsMuted } from "../src/lib/notifications-prefs";

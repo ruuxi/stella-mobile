@@ -53,6 +53,7 @@ import {
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { SpeechModule, speechAvailable, useSpeechRecognitionEvent } from "../../src/lib/speech";
 import { notifySuccess, tapMedium, tapLight } from "../../src/lib/haptics";
+import { CONTENT_MAX_FONT_SCALE } from "../../src/lib/setup-text-defaults";
 import { type Colors } from "../../src/theme/colors";
 import { useColors } from "../../src/theme/theme-context";
 import { fadeHex } from "../../src/theme/oklch";
@@ -221,7 +222,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
               ))}
             </View>
           ) : null}
-          {showText ? <Text style={styles.userText}>{item.text}</Text> : null}
+          {showText ? (
+            <Text
+              style={styles.userText}
+              maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+            >
+              {item.text}
+            </Text>
+          ) : null}
         </View>
       </View>
     );
@@ -233,7 +241,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
     >
-      <Text style={styles.assistantText} selectable>
+      <Text
+        style={styles.assistantText}
+        selectable
+        maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+      >
         {item.text}
       </Text>
     </Pressable>

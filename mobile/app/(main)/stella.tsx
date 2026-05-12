@@ -597,6 +597,7 @@ function AuthenticatedStellaScreen() {
                     autoCapitalize="characters"
                     autoCorrect={false}
                     keyboardType="ascii-capable"
+                    maxFontSizeMultiplier={1.2}
                     maxLength={PAIRING_CODE_LENGTH}
                     onChangeText={(value) =>
                       setPairingCode(normalizePairingCode(value))
