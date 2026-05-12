@@ -54,6 +54,7 @@ import { userFacingError } from "../../src/lib/user-facing-error";
 import { SpeechModule, speechAvailable, useSpeechRecognitionEvent } from "../../src/lib/speech";
 import { notifySuccess, tapMedium, tapLight } from "../../src/lib/haptics";
 import { CONTENT_MAX_FONT_SCALE } from "../../src/lib/setup-text-defaults";
+import { startComputerLiveActivity } from "../../src/lib/live-activity";
 import { type Colors } from "../../src/theme/colors";
 import { useColors } from "../../src/theme/theme-context";
 import { fadeHex } from "../../src/theme/oklch";
@@ -646,11 +647,16 @@ export default function ChatScreen() {
     const replyId = createId();
     setComputerMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
 
+    const activity = startComputerLiveActivity();
+    let accumulated = "";
+
     try {
       await postStream(
         "/api/mobile/chat",
         { message: text, mobileDeviceId },
         (delta) => {
+          accumulated += delta;
+          activity.update(accumulated);
           setComputerMessages((m) =>
             m.map((msg) =>
               msg.id === replyId ? { ...msg, text: msg.text + delta } : msg,
@@ -665,6 +671,7 @@ export default function ChatScreen() {
             : msg,
         ),
       );
+      activity.finish({ ok: true, preview: accumulated });
       notifySuccess();
     } catch (e) {
       setComputerMessages((m) =>
@@ -674,6 +681,7 @@ export default function ChatScreen() {
             : msg,
         ),
       );
+      activity.finish({ ok: false });
     } finally {
       setComputerSending(false);
     }

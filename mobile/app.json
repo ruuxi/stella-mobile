@@ -15,10 +15,11 @@
     },
     "ios": {
       "bundleIdentifier": "com.stella.mobile",
-      "buildNumber": "9",
+      "buildNumber": "10",
       "supportsTablet": true,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSupportsLiveActivities": true
       },
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
@@ -70,6 +71,22 @@
       "expo-font",
       "expo-image",
       "expo-notifications",
+      [
+        "expo-widgets",
+        {
+          "bundleIdentifier": "com.stella.mobile.LiveActivities",
+          "groupIdentifier": "group.com.stella.mobile.liveactivities",
+          "enablePushNotifications": false,
+          "widgets": [
+            {
+              "name": "ComputerActivity",
+              "displayName": "Stella Computer",
+              "description": "Tracks the progress of a Stella request running on your computer.",
+              "supportedFamilies": []
+            }
+          ]
+        }
+      ],
       [
         "expo-speech-recognition",
         {
