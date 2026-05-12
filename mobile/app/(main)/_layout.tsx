@@ -7,6 +7,7 @@ import {
 } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Icon, type IconName } from "../../src/components/Icon";
+import { GlassCard } from "../../src/components/GlassCard";
 import {
   Keyboard,
   Pressable,
@@ -72,7 +73,10 @@ function Sidebar({
   const headerName = !guest && user ? (user.name?.trim() || user.email || "Account") : null;
   const headerSub = !guest && user && user.name?.trim() ? user.email : null;
   return (
-    <View style={[styles.sidebar, { paddingTop: insets.top + 12, paddingBottom: insets.bottom }]}>
+    <GlassCard
+      radius={0}
+      style={[styles.sidebar, { paddingTop: insets.top + 12, paddingBottom: insets.bottom }]}
+    >
       {headerName ? (
         <View style={styles.identityBlock}>
           <Text style={styles.identityName} numberOfLines={1}>
@@ -116,7 +120,7 @@ function Sidebar({
           );
         })}
       </View>
-    </View>
+    </GlassCard>
   );
 }
 
@@ -370,7 +374,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   // Sidebar
   sidebar: {
-    backgroundColor: colors.background,
     borderRightColor: colors.border,
     borderRightWidth: StyleSheet.hairlineWidth,
     flex: 1,

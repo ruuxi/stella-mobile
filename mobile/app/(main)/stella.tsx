@@ -33,6 +33,7 @@ import { userFacingError } from "../../src/lib/user-facing-error";
 import { DesktopTabAnimation } from "../../src/components/DesktopTabAnimation";
 import { PairingQrScanner } from "../../src/components/PairingQrScanner";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
+import { GlassCard } from "../../src/components/GlassCard";
 import { notifyError, notifySuccess } from "../../src/lib/haptics";
 import { type Colors } from "../../src/theme/colors";
 import { useColors } from "../../src/theme/theme-context";
@@ -541,22 +542,24 @@ function AuthenticatedStellaScreen() {
 
         <View style={styles.manualCodeBlock}>
           <Text style={styles.manualCodeLabel}>or enter code manually</Text>
-          <TextInput
-            autoCapitalize="characters"
-            autoCorrect={false}
-            keyboardType="ascii-capable"
-            maxLength={PAIRING_CODE_LENGTH}
-            onChangeText={(value) =>
-              setPairingCode(normalizePairingCode(value))
-            }
-            onSubmitEditing={() => void pairPhone()}
-            placeholder="ABCDEFGH"
-            placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
-            returnKeyType="go"
-            style={styles.manualCodeInput}
-            textContentType="oneTimeCode"
-            value={pairingCode}
-          />
+          <GlassCard radius={14} ringed>
+            <TextInput
+              autoCapitalize="characters"
+              autoCorrect={false}
+              keyboardType="ascii-capable"
+              maxLength={PAIRING_CODE_LENGTH}
+              onChangeText={(value) =>
+                setPairingCode(normalizePairingCode(value))
+              }
+              onSubmitEditing={() => void pairPhone()}
+              placeholder="ABCDEFGH"
+              placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
+              returnKeyType="go"
+              style={styles.manualCodeInput}
+              textContentType="oneTimeCode"
+              value={pairingCode}
+            />
+          </GlassCard>
           <Pressable
             onPress={() => void pairPhone()}
             disabled={isPairing || pairingCode.length === 0}
@@ -746,10 +749,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     textAlign: "center",
   },
   manualCodeInput: {
-    backgroundColor: colors.panel,
-    borderColor: colors.border,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
     color: colors.text,
     fontFamily: fonts.sans.semiBold,
     fontSize: 22,

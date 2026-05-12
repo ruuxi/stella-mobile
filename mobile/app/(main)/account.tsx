@@ -28,6 +28,7 @@ import {
   subscribeNotificationsMuted,
 } from "../../src/lib/notifications-prefs";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
+import { GlassCard } from "../../src/components/GlassCard";
 import { type Colors } from "../../src/theme/colors";
 import {
   useColors,
@@ -232,22 +233,24 @@ export default function AccountScreen() {
       <Text style={styles.title}>{name}</Text>
       {email !== name && <Text style={styles.body}>{email}</Text>}
 
-      <Pressable
-        onPress={openUpgrade}
-        accessibilityLabel="Upgrade your Stella plan"
-        style={({ pressed }) => [
-          styles.upgradeCard,
-          pressed && styles.upgradeCardPressed,
-        ]}
-      >
-        <View style={styles.upgradeCopy}>
-          <Text style={styles.upgradeTitle}>Stella Pro</Text>
-          <Text style={styles.upgradeSub}>
-            Higher usage, faster replies, voice and image.
-          </Text>
-        </View>
-        <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
-      </Pressable>
+      <GlassCard radius={14} ringed style={styles.upgradeCardWrap}>
+        <Pressable
+          onPress={openUpgrade}
+          accessibilityLabel="Upgrade your Stella plan"
+          style={({ pressed }) => [
+            styles.upgradeCard,
+            pressed && styles.upgradeCardPressed,
+          ]}
+        >
+          <View style={styles.upgradeCopy}>
+            <Text style={styles.upgradeTitle}>Stella Pro</Text>
+            <Text style={styles.upgradeSub}>
+              Higher usage, faster replies, voice and image.
+            </Text>
+          </View>
+          <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
+        </Pressable>
+      </GlassCard>
 
       <View style={styles.separator} />
 
@@ -341,7 +344,12 @@ export default function AccountScreen() {
             const removing =
               removingDesktopId === access.desktopDeviceId;
             return (
-              <View key={access.desktopDeviceId} style={styles.pairedRow}>
+              <GlassCard
+                key={access.desktopDeviceId}
+                radius={12}
+                ringed
+                style={styles.pairedRow}
+              >
                 <View style={styles.pairedCopy}>
                   <Text style={styles.pairedName}>{label}</Text>
                   <Text style={styles.pairedSub}>
@@ -366,7 +374,7 @@ export default function AccountScreen() {
                     {removing ? "\u2026" : "Forget"}
                   </Text>
                 </Pressable>
-              </View>
+              </GlassCard>
             );
           })}
         </View>
@@ -375,28 +383,32 @@ export default function AccountScreen() {
       <View style={styles.separator} />
 
       <View style={styles.legalBlock}>
-        <Pressable
-          onPress={() => void Linking.openURL("https://stella.sh/terms")}
-          accessibilityLabel="Open Terms of Service"
-          style={({ pressed }) => [
-            styles.legalRow,
-            pressed && styles.legalRowPressed,
-          ]}
-        >
-          <Text style={styles.legalLabel}>Terms of Service</Text>
-          <Text style={styles.legalChevron}>›</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => void Linking.openURL("https://stella.sh/privacy")}
-          accessibilityLabel="Open Privacy Policy"
-          style={({ pressed }) => [
-            styles.legalRow,
-            pressed && styles.legalRowPressed,
-          ]}
-        >
-          <Text style={styles.legalLabel}>Privacy Policy</Text>
-          <Text style={styles.legalChevron}>›</Text>
-        </Pressable>
+        <GlassCard radius={12} ringed style={styles.legalRowWrap}>
+          <Pressable
+            onPress={() => void Linking.openURL("https://stella.sh/terms")}
+            accessibilityLabel="Open Terms of Service"
+            style={({ pressed }) => [
+              styles.legalRow,
+              pressed && styles.legalRowPressed,
+            ]}
+          >
+            <Text style={styles.legalLabel}>Terms of Service</Text>
+            <Text style={styles.legalChevron}>›</Text>
+          </Pressable>
+        </GlassCard>
+        <GlassCard radius={12} ringed style={styles.legalRowWrap}>
+          <Pressable
+            onPress={() => void Linking.openURL("https://stella.sh/privacy")}
+            accessibilityLabel="Open Privacy Policy"
+            style={({ pressed }) => [
+              styles.legalRow,
+              pressed && styles.legalRowPressed,
+            ]}
+          >
+            <Text style={styles.legalLabel}>Privacy Policy</Text>
+            <Text style={styles.legalChevron}>›</Text>
+          </Pressable>
+        </GlassCard>
       </View>
 
       <Pressable
@@ -466,15 +478,13 @@ const makeStyles = (colors: Colors) =>
       marginBottom: 10,
       textTransform: "uppercase",
     },
+    upgradeCardWrap: {
+      marginTop: 20,
+    },
     upgradeCard: {
       alignItems: "center",
-      borderColor: colors.accentSoft,
-      borderRadius: 14,
-      borderWidth: StyleSheet.hairlineWidth,
-      backgroundColor: colors.accentSoft,
       flexDirection: "row",
       gap: 12,
-      marginTop: 20,
       paddingHorizontal: 16,
       paddingVertical: 14,
     },
@@ -572,9 +582,6 @@ const makeStyles = (colors: Colors) =>
     },
     pairedRow: {
       alignItems: "center",
-      borderColor: colors.border,
-      borderRadius: 12,
-      borderWidth: StyleSheet.hairlineWidth,
       flexDirection: "row",
       gap: 12,
       paddingHorizontal: 14,
@@ -616,11 +623,9 @@ const makeStyles = (colors: Colors) =>
       marginBottom: 12,
       marginTop: 8,
     },
+    legalRowWrap: {},
     legalRow: {
       alignItems: "center",
-      borderColor: colors.border,
-      borderRadius: 12,
-      borderWidth: StyleSheet.hairlineWidth,
       flexDirection: "row",
       justifyContent: "space-between",
       paddingHorizontal: 14,
