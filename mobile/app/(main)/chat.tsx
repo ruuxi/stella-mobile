@@ -24,7 +24,7 @@ import Reanimated, {
   useAnimatedStyle,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Feather from "@expo/vector-icons/Feather";
+import { Icon, type IconName } from "../../src/components/Icon";
 import {
   loadComputerChatMessages,
   loadOfflineChatMessages,
@@ -238,7 +238,7 @@ function ScrollToBottomFab({
         pressed && styles.scrollToBottomFabPressed,
       ]}
     >
-      <Feather name="chevron-down" size={20} color={colors.accent} strokeWidth={2.2} />
+      <Icon name="chevron-down" size={20} color={colors.accent} weight="semibold" />
       {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
     </Pressable>
   );
@@ -816,7 +816,7 @@ export default function ChatScreen() {
                   onPress={() => removeAttachment(asset.uri)}
                   hitSlop={4}
                 >
-                  <Feather name="x" size={12} color={colors.accentForeground} />
+                  <Icon name="x" size={12} color={colors.accentForeground} weight="bold" />
                 </Pressable>
               </View>
             ))}
@@ -848,7 +848,7 @@ export default function ChatScreen() {
                     accessibilityLabel="Attach a photo"
                     onPress={() => void pickImage()}
                   >
-                    <Feather name="plus" size={18} color={colors.textMuted} />
+                    <Icon name="plus" size={18} color={colors.textMuted} weight="semibold" />
                   </Pressable>
                 </View>
                 <View style={styles.toolbarRight}>
@@ -860,10 +860,11 @@ export default function ChatScreen() {
                     style={[styles.micButton, isListening && styles.micButtonActive]}
                     hitSlop={4}
                   >
-                    <Feather
+                    <Icon
                       name={isListening ? "mic-off" : "mic"}
                       size={16}
                       color={isListening ? colors.accentForeground : colors.textMuted}
+                      filled={isListening}
                     />
                   </Pressable>
                   <Pressable
@@ -876,11 +877,11 @@ export default function ChatScreen() {
                     ]}
                     hitSlop={4}
                   >
-                    <Feather
+                    <Icon
                       name="arrow-up"
                       size={14}
                       color={colors.accentForeground}
-                      strokeWidth={2.5}
+                      weight="heavy"
                     />
                   </Pressable>
                 </View>
@@ -895,7 +896,7 @@ export default function ChatScreen() {
                 accessibilityLabel="Attach a photo"
                 onPress={() => void pickImage()}
               >
-                <Feather name="plus" size={18} color={colors.textMuted} />
+                <Icon name="plus" size={18} color={colors.textMuted} weight="semibold" />
               </Pressable>
               <TextInput
                 ref={inputRef}
@@ -919,11 +920,11 @@ export default function ChatScreen() {
                   style={styles.submitButton}
                   hitSlop={4}
                 >
-                  <Feather
+                  <Icon
                     name="arrow-up"
                     size={14}
                     color={colors.accentForeground}
-                    strokeWidth={2.5}
+                    weight="heavy"
                   />
                 </Pressable>
               ) : (
@@ -935,10 +936,11 @@ export default function ChatScreen() {
                   style={[styles.micButton, isListening && styles.micButtonActive]}
                   hitSlop={4}
                 >
-                  <Feather
+                  <Icon
                     name={isListening ? "mic-off" : "mic"}
                     size={16}
                     color={isListening ? colors.accentForeground : colors.textMuted}
+                    filled={isListening}
                   />
                 </Pressable>
               )}
@@ -1069,7 +1071,7 @@ export default function ChatScreen() {
                         ]}
                         hitSlop={4}
                       >
-                        <Feather
+                        <Icon
                           name={isListening ? "mic-off" : "mic"}
                           size={16}
                           color={
@@ -1077,6 +1079,7 @@ export default function ChatScreen() {
                               ? colors.accentForeground
                               : colors.textMuted
                           }
+                          filled={isListening}
                         />
                       </Pressable>
                       <Pressable
@@ -1093,11 +1096,11 @@ export default function ChatScreen() {
                         ]}
                         hitSlop={4}
                       >
-                        <Feather
+                        <Icon
                           name="arrow-up"
                           size={14}
                           color={colors.accentForeground}
-                          strokeWidth={2.5}
+                          weight="heavy"
                         />
                       </Pressable>
                     </View>
@@ -1141,11 +1144,11 @@ export default function ChatScreen() {
                       ]}
                       hitSlop={4}
                     >
-                      <Feather
+                      <Icon
                         name="arrow-up"
                         size={14}
                         color={colors.accentForeground}
-                        strokeWidth={2.5}
+                        weight="heavy"
                       />
                     </Pressable>
                   ) : (
@@ -1160,7 +1163,7 @@ export default function ChatScreen() {
                       ]}
                       hitSlop={4}
                     >
-                      <Feather
+                      <Icon
                         name={isListening ? "mic-off" : "mic"}
                         size={16}
                         color={
@@ -1168,6 +1171,7 @@ export default function ChatScreen() {
                             ? colors.accentForeground
                             : colors.textMuted
                         }
+                        filled={isListening}
                       />
                     </Pressable>
                   )}

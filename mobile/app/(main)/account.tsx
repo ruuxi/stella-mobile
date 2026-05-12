@@ -10,7 +10,7 @@ import {
   View,
 } from "react-native";
 import * as WebBrowser from "expo-web-browser";
-import Feather from "@expo/vector-icons/Feather";
+import { Icon } from "../../src/components/Icon";
 import { authClient } from "../../src/lib/auth-client";
 import { clearCachedToken } from "../../src/lib/auth-token";
 import { isGuest } from "../../src/lib/guest-mode";
@@ -246,7 +246,7 @@ export default function AccountScreen() {
             Higher usage, faster replies, voice and image.
           </Text>
         </View>
-        <Feather name="arrow-up-right" size={18} color={colors.accent} />
+        <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
       </Pressable>
 
       <View style={styles.separator} />

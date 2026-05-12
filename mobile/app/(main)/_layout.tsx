@@ -6,7 +6,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import Feather from "@expo/vector-icons/Feather";
+import { Icon, type IconName } from "../../src/components/Icon";
 import {
   Keyboard,
   Pressable,
@@ -36,7 +36,7 @@ type TabId = "chat" | "stella" | "account";
 const TABS: {
   id: TabId;
   label: string;
-  icon: React.ComponentProps<typeof Feather>["name"];
+  icon: IconName;
   href: string;
 }[] = [
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
@@ -100,11 +100,12 @@ function Sidebar({
                 pressed && styles.navItemPressed,
               ]}
             >
-              <Feather
+              <Icon
                 name={tab.icon}
                 size={18}
                 color={active ? colors.accent : colors.textMuted}
                 style={styles.navIcon}
+                filled={active}
               />
               <Text
                 style={[styles.navLabel, active && styles.navLabelActive]}
@@ -250,7 +251,7 @@ export default function MainLayout() {
                 accessibilityLabel="Open navigation"
                 style={styles.hamburger}
               >
-                <Feather name="menu" size={22} color={colors.text} />
+                <Icon name="menu" size={22} color={colors.text} weight="semibold" />
               </Pressable>
             </View>
             <View style={styles.topBarCenter} pointerEvents="box-none">

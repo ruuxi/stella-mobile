@@ -11,7 +11,7 @@ import {
   useCameraPermissions,
   type BarcodeScanningResult,
 } from "expo-camera";
-import Feather from "@expo/vector-icons/Feather";
+import { Icon } from "./Icon";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
@@ -161,7 +161,7 @@ export function PairingQrScanner({
           hitSlop={12}
           onPress={onClose}
         >
-          <Feather name="x" size={22} color="#ffffff" />
+          <Icon name="x" size={22} color="#ffffff" weight="semibold" />
         </Pressable>
       </View>
     </Modal>
