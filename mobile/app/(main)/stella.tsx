@@ -69,11 +69,27 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+const PAIRING_CODE_LENGTH = 8;
+
 const normalizePairingCode = (value: string) =>
   value
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
-    .slice(0, 12);
+    .slice(0, PAIRING_CODE_LENGTH);
+
+const shortDesktopId = (id: string) => id.slice(0, 4).toUpperCase();
+
+const desktopChipLabel = (
+  access: StoredPhoneAccess,
+  platform: string | null | undefined,
+  showSuffix: boolean,
+): string => {
+  const base = platform?.trim() || "Computer";
+  if (!showSuffix) {
+    return base;
+  }
+  return `${base} · ${shortDesktopId(access.desktopDeviceId)}`;
+};
 
 function getBridgeOrigin(bridgeUrl: string): string {
   return new URL(bridgeUrl).origin;
@@ -186,10 +202,43 @@ function AuthenticatedStellaScreen() {
   const [pairedDesktops, setPairedDesktops] = useState<StoredPhoneAccess[]>(
     [],
   );
+  const [desktopPlatforms, setDesktopPlatforms] = useState<
+    Record<string, string | null>
+  >({});
 
   useEffect(() => {
     void listStoredPairedPhoneAccess().then(setPairedDesktops);
   }, [preferredAccess]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const missing = pairedDesktops.filter(
+      (access) => !(access.desktopDeviceId in desktopPlatforms),
+    );
+    if (missing.length === 0) return;
+    void Promise.all(
+      missing.map(async (access) => {
+        try {
+          const status = await getDesktopBridgeStatus(access.desktopDeviceId);
+          return [access.desktopDeviceId, status.platform ?? null] as const;
+        } catch {
+          return [access.desktopDeviceId, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setDesktopPlatforms((prev) => {
+        const next = { ...prev };
+        for (const [id, platform] of entries) {
+          next[id] = platform;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopPlatforms, pairedDesktops]);
 
   const updatePreferredAccess = useCallback(
     (nextAccess: StoredPhoneAccess | null) => {
@@ -411,7 +460,7 @@ function AuthenticatedStellaScreen() {
           <Text style={styles.body}>
             {preferredAccess
               ? "Make sure Stella is open on your computer and connected to the internet. Once connected, your desktop app will appear right here on your phone."
-              : "See your Stella desktop app right on your phone. Enter the pairing code shown in Stella on your computer to get started — after that, your phone will reconnect automatically."}
+              : "See your Stella desktop app right on your phone. Scan the QR code shown in Stella on your computer to get started — after that, your phone will reconnect automatically."}
           </Text>
           {screenState.error && (
             <Text style={styles.errorText}>{screenState.error}</Text>
@@ -427,51 +476,44 @@ function AuthenticatedStellaScreen() {
           <View style={styles.switchDesktopRow}>
             <Text style={styles.inputLabel}>Paired computers</Text>
             <View style={styles.switchDesktopChips}>
-              {pairedDesktops.map((d) => (
-                <Pressable
-                  key={d.desktopDeviceId}
-                  onPress={() => {
-                    void setPreferredDesktopDeviceId(d.desktopDeviceId);
-                    void refreshBridge(d);
-                  }}
-                  style={({ pressed }) => [
-                    styles.desktopChip,
-                    pressed && styles.desktopChipPressed,
-                    preferredAccess?.desktopDeviceId === d.desktopDeviceId
-                      ? styles.desktopChipActive
-                      : null,
-                  ]}
-                >
-                  <Text style={styles.desktopChipText}>
-                    {d.desktopDeviceId.slice(0, 8)}…
-                  </Text>
-                </Pressable>
-              ))}
+              {pairedDesktops.map((d) => {
+                const platform = desktopPlatforms[d.desktopDeviceId] ?? null;
+                const samePlatformCount = pairedDesktops.filter(
+                  (other) =>
+                    (desktopPlatforms[other.desktopDeviceId] ?? null) ===
+                    platform,
+                ).length;
+                return (
+                  <Pressable
+                    key={d.desktopDeviceId}
+                    onPress={() => {
+                      void setPreferredDesktopDeviceId(d.desktopDeviceId);
+                      void refreshBridge(d);
+                    }}
+                    accessibilityLabel={`Switch to ${desktopChipLabel(d, platform, true)}`}
+                    style={({ pressed }) => [
+                      styles.desktopChip,
+                      pressed && styles.desktopChipPressed,
+                      preferredAccess?.desktopDeviceId === d.desktopDeviceId
+                        ? styles.desktopChipActive
+                        : null,
+                    ]}
+                  >
+                    <Text style={styles.desktopChipText}>
+                      {desktopChipLabel(d, platform, samePlatformCount > 1)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
           </View>
         ) : null}
 
-        <View style={styles.pairingCard}>
-          <Text style={styles.inputLabel}>Code from your computer</Text>
-          <TextInput
-            autoCapitalize="characters"
-            autoCorrect={false}
-            keyboardType="ascii-capable"
-            maxLength={12}
-            onChangeText={(value) =>
-              setPairingCode(normalizePairingCode(value))
-            }
-            placeholder="ABCDEFGH"
-            placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
-            style={styles.input}
-            textContentType="oneTimeCode"
-            value={pairingCode}
-          />
-        </View>
-
         <View style={styles.actionRow}>
           <Pressable
-            onPress={() => void pairPhone()}
+            onPress={() => setIsScanningQr(true)}
+            disabled={isPairing}
+            accessibilityLabel="Scan pairing QR code"
             style={({ pressed }) => [
               styles.actionButton,
               pressed && styles.actionButtonPressed,
@@ -479,29 +521,14 @@ function AuthenticatedStellaScreen() {
             ]}
           >
             <Text style={styles.actionButtonText}>
-              {isPairing
-                ? "Pairing..."
-                : preferredAccess
-                  ? "Pair New Computer"
-                  : "Pair Phone"}
+              {preferredAccess ? "Pair another computer" : "Scan QR code"}
             </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => setIsScanningQr(true)}
-            disabled={isPairing}
-            style={({ pressed }) => [
-              styles.secondaryButton,
-              pressed && styles.secondaryButtonPressed,
-              isPairing && styles.actionButtonDisabled,
-            ]}
-          >
-            <Text style={styles.secondaryButtonText}>Scan QR code</Text>
           </Pressable>
 
           {showRetry && (
             <Pressable
               onPress={() => void refreshBridge()}
+              accessibilityLabel="Try connecting again"
               style={({ pressed }) => [
                 styles.secondaryButton,
                 pressed && styles.secondaryButtonPressed,
@@ -510,6 +537,41 @@ function AuthenticatedStellaScreen() {
               <Text style={styles.secondaryButtonText}>Try again</Text>
             </Pressable>
           )}
+        </View>
+
+        <View style={styles.manualCodeBlock}>
+          <Text style={styles.manualCodeLabel}>or enter code manually</Text>
+          <TextInput
+            autoCapitalize="characters"
+            autoCorrect={false}
+            keyboardType="ascii-capable"
+            maxLength={PAIRING_CODE_LENGTH}
+            onChangeText={(value) =>
+              setPairingCode(normalizePairingCode(value))
+            }
+            onSubmitEditing={() => void pairPhone()}
+            placeholder="ABCDEFGH"
+            placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
+            returnKeyType="go"
+            style={styles.manualCodeInput}
+            textContentType="oneTimeCode"
+            value={pairingCode}
+          />
+          <Pressable
+            onPress={() => void pairPhone()}
+            disabled={isPairing || pairingCode.length === 0}
+            accessibilityLabel="Submit pairing code"
+            style={({ pressed }) => [
+              styles.manualCodeSubmit,
+              pressed && styles.manualCodeSubmitPressed,
+              (isPairing || pairingCode.length === 0) &&
+                styles.manualCodeSubmitDisabled,
+            ]}
+          >
+            <Text style={styles.manualCodeSubmitText}>
+              {isPairing ? "Pairing\u2026" : "Pair with code"}
+            </Text>
+          </Pressable>
         </View>
 
         <PairingQrScanner
@@ -664,10 +726,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     fontFamily: fonts.sans.medium,
     fontSize: 13,
   },
-  pairingCard: {
-    gap: 10,
-    marginTop: 28,
-  },
   inputLabel: {
     color: colors.textMuted,
     fontFamily: fonts.sans.medium,
@@ -675,7 +733,19 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     letterSpacing: 0.2,
     textAlign: "center",
   },
-  input: {
+  manualCodeBlock: {
+    alignItems: "stretch",
+    gap: 10,
+    marginTop: 24,
+  },
+  manualCodeLabel: {
+    color: colors.textMuted,
+    fontFamily: fonts.sans.regular,
+    fontSize: 13,
+    letterSpacing: -0.1,
+    textAlign: "center",
+  },
+  manualCodeInput: {
     backgroundColor: colors.panel,
     borderColor: colors.border,
     borderRadius: 14,
@@ -687,6 +757,28 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 16,
     textAlign: "center",
+  },
+  manualCodeSubmit: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  manualCodeSubmitPressed: {
+    opacity: 0.8,
+  },
+  manualCodeSubmitDisabled: {
+    opacity: 0.45,
+  },
+  manualCodeSubmitText: {
+    color: colors.text,
+    fontFamily: fonts.sans.medium,
+    fontSize: 15,
+    letterSpacing: -0.2,
   },
   actionRow: {
     flexDirection: "row",
