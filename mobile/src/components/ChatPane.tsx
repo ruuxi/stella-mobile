@@ -11,6 +11,7 @@ import {
   ActionSheetIOS,
   Alert,
   Animated,
+  Easing,
   Keyboard,
   LayoutAnimation,
   NativeScrollEvent,
@@ -33,10 +34,6 @@ import { Image } from "expo-image";
 import { GlassView } from "expo-glass-effect";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
-import Reanimated, {
-  useAnimatedKeyboard,
-  useAnimatedStyle,
-} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "./Icon";
 import { DictationRecordingBar } from "./DictationRecordingBar";
@@ -623,10 +620,46 @@ export function ChatPane({
 
   const inputRef = useRef<TextInput>(null);
   const insets = useSafeAreaInsets();
-  const keyboard = useAnimatedKeyboard();
-  const keyboardStyle = useAnimatedStyle(() => ({
-    paddingBottom: Math.max(0, keyboard.height.value - insets.bottom),
-  }));
+
+  // `useAnimatedKeyboard` is deprecated in Reanimated 4 and observably broken
+  // on iOS 26 here (height stayed at 0, leaving the composer hidden behind
+  // the keyboard). Track keyboard height manually with the standard RN
+  // listeners and animate `paddingBottom` so the chat content compresses
+  // instead of getting covered.
+  const keyboardPad = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animate = (toValue: number, duration: number) => {
+      Animated.timing(keyboardPad, {
+        toValue,
+        duration: Math.max(0, duration),
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      const height = e?.endCoordinates?.height ?? 0;
+      // Subtract the safe-area inset: it already contributes its own padding
+      // below the composer, so we only need to add the *delta* to clear the
+      // keyboard.
+      const target = Math.max(0, height - insets.bottom);
+      animate(target, e?.duration ?? 250);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, (e) => {
+      animate(0, e?.duration ?? 250);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [insets.bottom, keyboardPad]);
 
   const scroll = useChatScroll({ messages, streaming });
 
@@ -824,7 +857,7 @@ export function ChatPane({
     enableAttachments && (attachments?.length ?? 0) > 0;
 
   return (
-    <Reanimated.View style={[styles.screen, keyboardStyle]}>
+    <Animated.View style={[styles.screen, { paddingBottom: keyboardPad }]}>
       <View style={styles.viewport}>
         {empty ? (
           <Pressable style={styles.emptyState} onPress={() => Keyboard.dismiss()}>
@@ -1024,7 +1057,7 @@ export function ChatPane({
           )}
         </GlassView>
       </View>
-    </Reanimated.View>
+    </Animated.View>
   );
 }
 
