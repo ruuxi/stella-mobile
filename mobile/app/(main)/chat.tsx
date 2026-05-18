@@ -51,7 +51,8 @@ import {
   subscribeDesktopConnection,
 } from "../../src/lib/desktop-connection";
 import { userFacingError } from "../../src/lib/user-facing-error";
-import { SpeechModule, speechAvailable, useSpeechRecognitionEvent } from "../../src/lib/speech";
+import { useDictation } from "../../src/lib/dictation";
+import { DictationRecordingBar } from "../../src/components/DictationRecordingBar";
 import { notifySuccess, tapMedium, tapLight } from "../../src/lib/haptics";
 import { CONTENT_MAX_FONT_SCALE } from "../../src/lib/setup-text-defaults";
 import { startComputerLiveActivity } from "../../src/lib/live-activity";
@@ -61,6 +62,7 @@ import { fadeHex } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
+import { WorkingIndicator } from "../../src/components/WorkingIndicator";
 
 // Required for LayoutAnimation on Android
 if (
@@ -81,7 +83,7 @@ if (
  * fontSize 14 × lineHeight 1.5 ≈ 21 per line → two lines ≈ 42.
  * Use a value just above two lines so single-line typing stays pill.
  */
-const EXPAND_THRESHOLD = 50;
+const EXPAND_THRESHOLD = 44;
 /** LayoutAnimation config matching the same 350ms critically-damped spring */
 const LAYOUT_SPRING = {
   duration: 350,
@@ -108,17 +110,219 @@ const createId = () =>
 /** Pixels from the bottom of the content past which we show “scroll to bottom”. */
 const SCROLL_AWAY_FROM_BOTTOM_THRESHOLD = 96;
 
-function isScrolledAwayFromBottom(
-  e: NativeSyntheticEvent<NativeScrollEvent>,
-  thresholdPx: number,
-): boolean {
-  const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-  if (contentSize.height <= layoutMeasurement.height + 2) {
-    return false;
-  }
-  const distanceFromBottom =
-    contentSize.height - contentOffset.y - layoutMeasurement.height;
-  return distanceFromBottom > thresholdPx;
+/** Small acknowledgement scroll on send, matching desktop's ~48px nudge. */
+const SEND_NUDGE_PX = 48;
+
+/**
+ * Tail spacer below the conversation while a turn is in progress, so a freshly
+ * sent user message can land near the top and the streaming assistant message
+ * has room to grow into empty space (mirrors desktop's `.session-turn--last-turn`
+ * reading-area min-height).
+ */
+const TAIL_SPACER_PX = 180;
+
+// ---------------------------------------------------------------------------
+// useChatScroll — shared scroll behavior for the chat and computer panes.
+//
+// Mirrors the desktop chat scroll model:
+//   1. Auto-follow only while the user is pinned near the bottom; yield
+//      immediately on user drag / scroll up.
+//   2. Send acknowledges with a small ~48px nudge, not a snap to bottom.
+//   3. While streaming, anchor the streaming assistant row's top to the
+//      viewport top once it would overflow — and stop following past that
+//      point so the user gets the full view of the assistant's first lines.
+//   4. Defer to the native scroll view's animated scrolling for smoothing
+//      that naturally adapts to actual stream rate.
+// ---------------------------------------------------------------------------
+
+function useChatScroll(opts: {
+  messages: ChatMessage[];
+  streaming: boolean;
+}) {
+  const { messages, streaming } = opts;
+  const listRef = useRef<FlashListRef<ChatMessage>>(null);
+  const offsetYRef = useRef(0);
+  const layoutHRef = useRef(0);
+  const contentHRef = useRef(0);
+  const pinnedRef = useRef(true);
+  const draggingRef = useRef(false);
+  const lockedRef = useRef(false);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+
+  const streamingIndex = streaming ? messages.length - 1 : -1;
+  const streamingTextLen =
+    streamingIndex >= 0 ? messages[streamingIndex]?.text.length ?? 0 : 0;
+
+  // Track the user message that initiated the current streaming turn so we
+  // can reset the streaming anchor lock when a new turn starts.
+  const lastUserIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return i;
+    }
+    return -1;
+  }, [messages]);
+
+  useEffect(() => {
+    if (streaming) lockedRef.current = false;
+  }, [streaming, lastUserIndex]);
+
+  const readScrollOffset = useCallback((list: FlashListRef<ChatMessage>) => {
+    if (typeof list.getAbsoluteLastScrollOffset === "function") {
+      return list.getAbsoluteLastScrollOffset();
+    }
+    return offsetYRef.current;
+  }, []);
+
+  const readContentHeight = useCallback((list: FlashListRef<ChatMessage>) => {
+    const dims = list.getChildContainerDimensions?.();
+    if (dims && dims.height > 0) return dims.height;
+    return contentHRef.current;
+  }, []);
+
+  const tickFollow = useCallback(() => {
+    if (draggingRef.current) return;
+    if (!pinnedRef.current) return;
+    if (lockedRef.current) return;
+
+    const list = listRef.current;
+    if (!list) return;
+
+    const viewportH = layoutHRef.current || list.getWindowSize().height || 0;
+    if (viewportH <= 0) return;
+
+    const contentH = readContentHeight(list);
+    if (contentH <= 0) return;
+    contentHRef.current = contentH;
+
+    const currentOffset = readScrollOffset(list);
+    const FOLLOW_PAD = 24;
+
+    if (streamingIndex < 0) {
+      requestAnimationFrame(() => list.scrollToEnd({ animated: true }));
+      return;
+    }
+
+    const layout = list.getLayout(streamingIndex);
+
+    if (layout && layout.y <= currentOffset + 2) {
+      lockedRef.current = true;
+      return;
+    }
+
+    const distFromBottom = contentH - currentOffset - viewportH;
+    let targetOffset: number;
+
+    if (layout && layout.height > 0) {
+      const streamingBottomInViewport =
+        layout.y + layout.height - currentOffset;
+      if (streamingBottomInViewport < viewportH - FOLLOW_PAD) {
+        // Row layout can lag behind stream text — also check total content
+        // height so follow resumes once the tail spacer budget is consumed.
+        if (distFromBottom <= TAIL_SPACER_PX + FOLLOW_PAD) {
+          return;
+        }
+        targetOffset = contentH - viewportH - TAIL_SPACER_PX;
+      } else {
+        targetOffset = layout.y + layout.height - viewportH + FOLLOW_PAD;
+      }
+    } else {
+      // FlashList may not have laid out the streaming row yet — follow via
+      // content height while reserving the tail spacer so we don't snap to end.
+      if (distFromBottom <= TAIL_SPACER_PX + FOLLOW_PAD) {
+        return;
+      }
+      targetOffset = contentH - viewportH - TAIL_SPACER_PX;
+    }
+
+    if (targetOffset <= currentOffset + 1) return;
+
+    requestAnimationFrame(() => {
+      list.scrollToOffset({
+        offset: Math.max(0, targetOffset),
+        animated: true,
+        skipFirstItemOffset: false,
+      });
+    });
+  }, [readContentHeight, readScrollOffset, streamingIndex]);
+
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      offsetYRef.current = contentOffset.y;
+      layoutHRef.current = layoutMeasurement.height;
+      contentHRef.current = contentSize.height;
+
+      const hasOverflow = contentSize.height > layoutMeasurement.height + 2;
+      const distFromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height;
+      const pinned =
+        !hasOverflow || distFromBottom <= SCROLL_AWAY_FROM_BOTTOM_THRESHOLD;
+
+      const wasPinned = pinnedRef.current;
+      pinnedRef.current = pinned;
+
+      if (!wasPinned && pinned && draggingRef.current) {
+        lockedRef.current = false;
+      }
+
+      setAwayFromBottom(hasOverflow && !pinned);
+    },
+    [],
+  );
+
+  const onScrollBeginDrag = useCallback(() => {
+    draggingRef.current = true;
+  }, []);
+
+  const onScrollEndDrag = useCallback(() => {
+    draggingRef.current = false;
+  }, []);
+
+  const handleContentChange = useCallback(() => {
+    tickFollow();
+  }, [tickFollow]);
+
+  // Stream deltas update message text without always changing list content
+  // height synchronously — re-run follow after each chunk lands.
+  useEffect(() => {
+    if (!streaming) return;
+    tickFollow();
+  }, [streaming, streamingTextLen, tickFollow]);
+
+  const scrollToBottom = useCallback(() => {
+    lockedRef.current = false;
+    requestAnimationFrame(() =>
+      listRef.current?.scrollToEnd({ animated: true }),
+    );
+  }, []);
+
+  const nudgeOnSend = useCallback(() => {
+    lockedRef.current = false;
+    requestAnimationFrame(() => {
+      const list = listRef.current;
+      if (!list) return;
+      const current =
+        typeof list.getAbsoluteLastScrollOffset === "function"
+          ? list.getAbsoluteLastScrollOffset()
+          : offsetYRef.current;
+      list.scrollToOffset({
+        offset: current + SEND_NUDGE_PX,
+        animated: true,
+        skipFirstItemOffset: false,
+      });
+    });
+  }, []);
+
+  return {
+    listRef,
+    onScroll,
+    onScrollBeginDrag,
+    onScrollEndDrag,
+    handleContentChange,
+    scrollToBottom,
+    nudgeOnSend,
+    awayFromBottom,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +457,72 @@ const ChatMessageRow = memo(function ChatMessageRow({
   );
 });
 
+/**
+ * Submit button that springs between enabled/disabled states like the
+ * desktop `motion.button` in `ComposerPrimitives.tsx`:
+ *   animate={{ opacity: canSubmit ? 1 : 0.4, scale: canSubmit ? 1 : 0.92 }}
+ *   transition={{ type: "spring", duration: 0.2, bounce: 0 }}
+ */
+function AnimatedSubmitButton({
+  canSubmit,
+  onPress,
+  styles,
+  colors,
+  accessibilityLabel,
+}: {
+  canSubmit: boolean;
+  onPress: () => void;
+  styles: ReturnType<typeof makeStyles>;
+  colors: Colors;
+  accessibilityLabel: string;
+}) {
+  const opacity = useRef(new Animated.Value(canSubmit ? 1 : 0.4)).current;
+  const scale = useRef(new Animated.Value(canSubmit ? 1 : 0.92)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(opacity, {
+        toValue: canSubmit ? 1 : 0.4,
+        damping: 18,
+        stiffness: 260,
+        mass: 0.6,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scale, {
+        toValue: canSubmit ? 1 : 0.92,
+        damping: 18,
+        stiffness: 260,
+        mass: 0.6,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [canSubmit, opacity, scale]);
+
+  const animatedStyle = useMemo(
+    () => ({ opacity, transform: [{ scale }] }),
+    [opacity, scale],
+  );
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Pressable
+        onPress={onPress}
+        disabled={!canSubmit}
+        accessibilityLabel={accessibilityLabel}
+        style={styles.submitButton}
+        hitSlop={4}
+      >
+        <Icon
+          name="arrow-up"
+          size={14}
+          color={colors.accentForeground}
+          weight="heavy"
+        />
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 function ScrollToBottomFab({
   visible,
   hasUnread,
@@ -298,7 +568,6 @@ export default function ChatScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const guest = isGuest();
-  const listRef = useRef<FlashListRef<ChatMessage>>(null);
   const inputRef = useRef<TextInput>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
@@ -316,10 +585,13 @@ export default function ChatScreen() {
   const [computerStorageLoaded, setComputerStorageLoaded] = useState(false);
   const [computerDraft, setComputerDraft] = useState("");
   const [computerSending, setComputerSending] = useState(false);
-  const computerListRef = useRef<FlashListRef<ChatMessage>>(null);
 
-  const [chatAwayFromBottom, setChatAwayFromBottom] = useState(false);
-  const [computerAwayFromBottom, setComputerAwayFromBottom] = useState(false);
+  const chatScroll = useChatScroll({ messages, streaming: sending });
+  const computerScroll = useChatScroll({
+    messages: computerMessages,
+    streaming: computerSending,
+  });
+
   const [chatUnread, setChatUnread] = useState(false);
   const [computerUnread, setComputerUnread] = useState(false);
   const prevChatLengthRef = useRef(0);
@@ -327,30 +599,6 @@ export default function ChatScreen() {
 
   const [showConsentModal, setShowConsentModal] = useState(false);
   const pendingSendRef = useRef<(() => void) | null>(null);
-
-  const onChatScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      setChatAwayFromBottom(
-        isScrolledAwayFromBottom(e, SCROLL_AWAY_FROM_BOTTOM_THRESHOLD),
-      );
-    },
-    [],
-  );
-
-  const onComputerScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      setComputerAwayFromBottom(
-        isScrolledAwayFromBottom(e, SCROLL_AWAY_FROM_BOTTOM_THRESHOLD),
-      );
-    },
-    [],
-  );
-
-  const scrollComputerToEnd = useCallback(() => {
-    requestAnimationFrame(() =>
-      computerListRef.current?.scrollToEnd({ animated: true }),
-    );
-  }, []);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
@@ -449,35 +697,33 @@ export default function ChatScreen() {
     const grew = messages.length > prevChatLengthRef.current;
     prevChatLengthRef.current = messages.length;
     if (messages.length === 0) {
-      setChatAwayFromBottom(false);
       setChatUnread(false);
       return;
     }
-    if (grew && chatAwayFromBottom) {
+    if (grew && chatScroll.awayFromBottom) {
       setChatUnread(true);
     }
-  }, [chatAwayFromBottom, messages.length]);
+  }, [chatScroll.awayFromBottom, messages.length]);
 
   useEffect(() => {
-    if (!chatAwayFromBottom) setChatUnread(false);
-  }, [chatAwayFromBottom]);
+    if (!chatScroll.awayFromBottom) setChatUnread(false);
+  }, [chatScroll.awayFromBottom]);
 
   useEffect(() => {
     const grew = computerMessages.length > prevComputerLengthRef.current;
     prevComputerLengthRef.current = computerMessages.length;
     if (computerMessages.length === 0) {
-      setComputerAwayFromBottom(false);
       setComputerUnread(false);
       return;
     }
-    if (grew && computerAwayFromBottom) {
+    if (grew && computerScroll.awayFromBottom) {
       setComputerUnread(true);
     }
-  }, [computerAwayFromBottom, computerMessages.length]);
+  }, [computerScroll.awayFromBottom, computerMessages.length]);
 
   useEffect(() => {
-    if (!computerAwayFromBottom) setComputerUnread(false);
-  }, [computerAwayFromBottom]);
+    if (!computerScroll.awayFromBottom) setComputerUnread(false);
+  }, [computerScroll.awayFromBottom]);
 
   const canSubmit = (draft.trim().length > 0 || attachments.length > 0) && !sending;
 
@@ -506,12 +752,6 @@ export default function ChatScreen() {
   const removeAttachment = (uri: string) => {
     setAttachments((prev) => prev.filter((a) => a.uri !== uri));
   };
-
-  const scrollToEnd = useCallback(() => {
-    requestAnimationFrame(() =>
-      listRef.current?.scrollToEnd({ animated: true }),
-    );
-  }, []);
 
   // --------------- Send ---------------
 
@@ -551,7 +791,7 @@ export default function ChatScreen() {
     }
 
     setMessages((m) => [...m, userMsg]);
-    scrollToEnd();
+    chatScroll.nudgeOnSend();
 
     const imagesPayload: { base64: string; mimeType: string }[] = [];
     for (const a of assets) {
@@ -640,9 +880,7 @@ export default function ChatScreen() {
       setComputerExpanded(false);
     }
     setComputerMessages((m) => [...m, userMsg]);
-    requestAnimationFrame(() =>
-      computerListRef.current?.scrollToEnd({ animated: true }),
-    );
+    computerScroll.nudgeOnSend();
 
     const replyId = createId();
     setComputerMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
@@ -728,61 +966,39 @@ export default function ChatScreen() {
     [computerExpanded],
   );
 
-  // --------------- Voice input ---------------
+  // --------------- Voice input (Voxtral via /api/mobile/transcribe) ---------------
 
-  const [isListening, setIsListening] = useState(false);
+  const dictationHeaders = useMemo(() => {
+    if (!guest || !mobileDeviceId) return undefined;
+    return { "X-Stella-Mobile-Device-Id": mobileDeviceId };
+  }, [guest, mobileDeviceId]);
 
-  useSpeechRecognitionEvent("result", (event) => {
-    const transcript = event.results[0]?.transcript;
-    if (transcript) {
-      if (mode === "chat") {
-        setDraft(transcript);
-      } else {
-        setComputerDraft(transcript);
-      }
-    }
-    if (event.isFinal) {
-      setIsListening(false);
-    }
+  const appendTranscript = useCallback(
+    (text: string) => {
+      const target = mode === "chat" ? setDraft : setComputerDraft;
+      target((prev) => {
+        const trimmedPrev = prev.trimEnd();
+        if (!trimmedPrev) return text;
+        return `${trimmedPrev} ${text}`;
+      });
+    },
+    [mode],
+  );
+
+  const dictation = useDictation({
+    anonymous: guest,
+    headers: dictationHeaders,
+    onTranscript: appendTranscript,
   });
 
-  useSpeechRecognitionEvent("end", () => {
-    setIsListening(false);
-  });
+  const isListening = dictation.isRecording;
 
-  useSpeechRecognitionEvent("error", () => {
-    setIsListening(false);
-  });
-
-  const toggleVoice = async () => {
-    if (!SpeechModule) {
-      Alert.alert("Voice Input", "Voice input requires a development build and is not available in Expo Go.");
-      return;
+  const toggleVoice = useCallback(async () => {
+    if (dictation.status === "idle") {
+      tapLight();
     }
-
-    if (isListening) {
-      SpeechModule.stop();
-      setIsListening(false);
-      return;
-    }
-
-    const { granted } = await SpeechModule.requestPermissionsAsync();
-    if (!granted) {
-      Alert.alert(
-        "Microphone",
-        "Allow Stella to access your microphone in Settings so you can use voice input.",
-      );
-      return;
-    }
-
-    tapLight();
-    setIsListening(true);
-    SpeechModule.start({
-      lang: "en-US",
-      interimResults: true,
-      addsPunctuation: true,
-    });
-  };
+    await dictation.toggle();
+  }, [dictation]);
 
   const onConsentAccept = () => {
     void grantAiConsent().then(() => {
@@ -820,24 +1036,29 @@ export default function ChatScreen() {
             ) : (
               <>
                 <FlashList
-                  ref={listRef}
+                  ref={chatScroll.listRef}
                   contentContainerStyle={styles.list}
                   data={messages}
                   renderItem={renderChatItem}
                   keyExtractor={keyExtractor}
                   getItemType={getMessageItemType}
                   ItemSeparatorComponent={renderMessageSeparator}
-                  onContentSizeChange={scrollToEnd}
-                  onScroll={onChatScroll}
+                  ListFooterComponent={
+                    sending ? <View style={styles.tailSpacer} /> : null
+                  }
+                  onContentSizeChange={chatScroll.handleContentChange}
+                  onScroll={chatScroll.onScroll}
+                  onScrollBeginDrag={chatScroll.onScrollBeginDrag}
+                  onScrollEndDrag={chatScroll.onScrollEndDrag}
                   scrollEventThrottle={16}
                   showsVerticalScrollIndicator={false}
                   keyboardDismissMode="on-drag"
                   fadingEdgeLength={EDGE_FADE}
                 />
                 <ScrollToBottomFab
-                  visible={chatAwayFromBottom}
+                  visible={chatScroll.awayFromBottom}
                   hasUnread={chatUnread}
-                  onPress={scrollToEnd}
+                  onPress={chatScroll.scrollToBottom}
                   styles={styles}
                   colors={colors}
                 />
@@ -853,7 +1074,8 @@ export default function ChatScreen() {
             .composer-form     → row (pill) or column (expanded)
               [add] [input] [toolbar: [add-toolbar] [stop] [submit]]
       */}
-      <View style={styles.composerWrap}>
+      <WorkingIndicator active={sending} />
+      <View style={[styles.composerWrap, { paddingBottom: 6 + insets.bottom }]}>
         {attachments.length > 0 && (
           <View style={styles.attachmentStrip}>
             {attachments.map((asset) => (
@@ -875,131 +1097,159 @@ export default function ChatScreen() {
             ))}
           </View>
         )}
-        <GlassView style={[styles.shell, expanded ? styles.shellExpanded : styles.shellPill]}>
-
-          {expanded ? (
-            /* ---- Expanded: column, textarea on top, toolbar below ---- */
-            <View style={styles.formExpanded}>
-              <TextInput
-                ref={inputRef}
-                multiline
-                onChangeText={setDraft}
-                onContentSizeChange={handleContentSizeChange}
-                blurOnSubmit={false}
-                placeholder="Message Stella"
-                placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
-                selectionColor={colors.accent}
-                underlineColorAndroid="transparent"
-                style={styles.inputExpanded}
-                value={draft}
-              />
-              <View style={styles.toolbar}>
-                <View style={styles.toolbarLeft}>
+        {(() => {
+          const hasText = draft.trim().length > 0;
+          // Mirror desktop: replace pill content with the dictation bar when
+          // recording with no text; render it as an extra row below when
+          // recording with text (forces expanded layout).
+          const dictationInline = isListening && !hasText;
+          const dictationBelow = isListening && hasText;
+          const isExpandedComposed = expanded || dictationBelow;
+          return (
+            <GlassView
+              style={[
+                styles.shell,
+                isExpandedComposed ? styles.shellExpanded : styles.shellPill,
+              ]}
+            >
+              {dictationInline ? (
+                /* ---- Dictation: replaces the pill contents ---- */
+                <View style={styles.formPill}>
                   <Pressable
                     style={styles.addButton}
                     hitSlop={4}
                     accessibilityLabel="Attach a photo"
                     onPress={() => void pickImage()}
                   >
-                    <Icon name="plus" size={18} color={colors.textMuted} weight="semibold" />
+                    <Icon name="plus" size={16} color={colors.textMuted} weight="semibold" />
                   </Pressable>
-                </View>
-                <View style={styles.toolbarRight}>
-                  <Pressable
-                    onPress={() => void toggleVoice()}
-                    accessibilityLabel={
-                      isListening ? "Stop voice input" : "Start voice input"
-                    }
-                    style={[styles.micButton, isListening && styles.micButtonActive]}
-                    hitSlop={4}
-                  >
-                    <Icon
-                      name={isListening ? "mic-off" : "mic"}
-                      size={16}
-                      color={isListening ? colors.accentForeground : colors.textMuted}
-                      filled={isListening}
-                    />
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void send()}
-                    disabled={!canSubmit}
-                    accessibilityLabel="Send message"
-                    style={[
-                      styles.submitButton,
-                      !canSubmit && styles.submitDisabled,
-                    ]}
-                    hitSlop={4}
-                  >
-                    <Icon
-                      name="arrow-up"
-                      size={14}
-                      color={colors.accentForeground}
-                      weight="heavy"
-                    />
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          ) : (
-            /* ---- Pill: single row, input + submit ---- */
-            <View style={styles.formPill}>
-              <Pressable
-                style={styles.addButton}
-                hitSlop={4}
-                accessibilityLabel="Attach a photo"
-                onPress={() => void pickImage()}
-              >
-                <Icon name="plus" size={18} color={colors.textMuted} weight="semibold" />
-              </Pressable>
-              <TextInput
-                ref={inputRef}
-                scrollEnabled={false}
-                onChangeText={setDraft}
-                onContentSizeChange={handleContentSizeChange}
-                blurOnSubmit
-                onSubmitEditing={() => void send()}
-                returnKeyType="send"
-                placeholder={isListening ? "Listening..." : "Message Stella"}
-                placeholderTextColor={isListening ? colors.accent : fadeHex(colors.textMuted, 0.35)}
-                selectionColor={colors.accent}
-                underlineColorAndroid="transparent"
-                style={styles.inputPill}
-                value={draft}
-              />
-              {canSubmit ? (
-                <Pressable
-                  onPress={() => void send()}
-                  accessibilityLabel="Send message"
-                  style={styles.submitButton}
-                  hitSlop={4}
-                >
-                  <Icon
-                    name="arrow-up"
-                    size={14}
-                    color={colors.accentForeground}
-                    weight="heavy"
+                  <DictationRecordingBar
+                    levels={dictation.levels}
+                    elapsedMs={dictation.elapsedMs}
+                    onCancel={() => void dictation.cancel()}
+                    onConfirm={() => void dictation.stop()}
                   />
-                </Pressable>
+                </View>
+              ) : isExpandedComposed ? (
+                /* ---- Expanded: column, textarea on top, toolbar below ---- */
+                <View style={styles.formExpanded}>
+                  <TextInput
+                    ref={inputRef}
+                    multiline
+                    onChangeText={setDraft}
+                    onContentSizeChange={handleContentSizeChange}
+                    blurOnSubmit={false}
+                    placeholder="Message Stella"
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
+                    selectionColor={colors.accent}
+                    underlineColorAndroid="transparent"
+                    style={styles.inputExpanded}
+                    value={draft}
+                  />
+                  <View style={styles.toolbar}>
+                    <View style={styles.toolbarLeft}>
+                      <Pressable
+                        style={styles.addButton}
+                        hitSlop={4}
+                        accessibilityLabel="Attach a photo"
+                        onPress={() => void pickImage()}
+                      >
+                        <Icon name="plus" size={16} color={colors.textMuted} weight="semibold" />
+                      </Pressable>
+                    </View>
+                    <View style={styles.toolbarRight}>
+                      <Pressable
+                        onPress={() => void toggleVoice()}
+                        accessibilityLabel={
+                          isListening ? "Stop voice input" : "Start voice input"
+                        }
+                        disabled={dictation.isTranscribing}
+                        style={[styles.micButton, isListening && styles.micButtonActive]}
+                        hitSlop={4}
+                      >
+                        <Icon
+                          name={isListening ? "mic-off" : "mic"}
+                          size={16}
+                          color={isListening ? colors.accentForeground : colors.textMuted}
+                          filled={isListening}
+                        />
+                      </Pressable>
+                      <AnimatedSubmitButton
+                        canSubmit={canSubmit}
+                        onPress={() => void send()}
+                        styles={styles}
+                        colors={colors}
+                        accessibilityLabel="Send message"
+                      />
+                    </View>
+                  </View>
+                  {dictationBelow && (
+                    <View style={styles.dictationRow}>
+                      <DictationRecordingBar
+                        levels={dictation.levels}
+                        elapsedMs={dictation.elapsedMs}
+                        onCancel={() => void dictation.cancel()}
+                        onConfirm={() => void dictation.stop()}
+                      />
+                    </View>
+                  )}
+                </View>
               ) : (
-                <Pressable
-                  onPress={() => void toggleVoice()}
-                  accessibilityLabel={
-                    isListening ? "Stop voice input" : "Start voice input"
-                  }
-                  style={[styles.micButton, isListening && styles.micButtonActive]}
-                  hitSlop={4}
-                >
-                  <Icon
-                    name={isListening ? "mic-off" : "mic"}
-                    size={16}
-                    color={isListening ? colors.accentForeground : colors.textMuted}
-                    filled={isListening}
+                /* ---- Pill: single row, input + submit ---- */
+                <View style={styles.formPill}>
+                  <Pressable
+                    style={styles.addButton}
+                    hitSlop={4}
+                    accessibilityLabel="Attach a photo"
+                    onPress={() => void pickImage()}
+                  >
+                    <Icon name="plus" size={16} color={colors.textMuted} weight="semibold" />
+                  </Pressable>
+                  <TextInput
+                    ref={inputRef}
+                    scrollEnabled={false}
+                    onChangeText={setDraft}
+                    onContentSizeChange={handleContentSizeChange}
+                    blurOnSubmit
+                    onSubmitEditing={() => void send()}
+                    returnKeyType="send"
+                    placeholder={
+                      dictation.isTranscribing ? "Transcribing\u2026" : "Message Stella"
+                    }
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
+                    selectionColor={colors.accent}
+                    underlineColorAndroid="transparent"
+                    style={styles.inputPill}
+                    value={draft}
                   />
-                </Pressable>
+                  {canSubmit ? (
+                    <AnimatedSubmitButton
+                      canSubmit={canSubmit}
+                      onPress={() => void send()}
+                      styles={styles}
+                      colors={colors}
+                      accessibilityLabel="Send message"
+                    />
+                  ) : (
+                    <Pressable
+                      onPress={() => void toggleVoice()}
+                      accessibilityLabel="Start voice input"
+                      disabled={dictation.isTranscribing}
+                      style={styles.micButton}
+                      hitSlop={4}
+                    >
+                      <Icon
+                        name="mic"
+                        size={16}
+                        color={colors.textMuted}
+                      />
+                    </Pressable>
+                  )}
+                </View>
               )}
-            </View>
-          )}
-        </GlassView>
+            </GlassView>
+          );
+        })()}
       </View>
         </>
       ) : guest ? (
@@ -1054,28 +1304,29 @@ export default function ChatScreen() {
             ) : (
               <>
                 <FlashList
-                  ref={computerListRef}
+                  ref={computerScroll.listRef}
                   contentContainerStyle={styles.list}
                   data={computerMessages}
                   renderItem={renderComputerItem}
                   keyExtractor={keyExtractor}
                   getItemType={getMessageItemType}
                   ItemSeparatorComponent={renderMessageSeparator}
-                  onContentSizeChange={() =>
-                    requestAnimationFrame(() =>
-                      computerListRef.current?.scrollToEnd({ animated: true }),
-                    )
+                  ListFooterComponent={
+                    computerSending ? <View style={styles.tailSpacer} /> : null
                   }
-                  onScroll={onComputerScroll}
+                  onContentSizeChange={computerScroll.handleContentChange}
+                  onScroll={computerScroll.onScroll}
+                  onScrollBeginDrag={computerScroll.onScrollBeginDrag}
+                  onScrollEndDrag={computerScroll.onScrollEndDrag}
                   scrollEventThrottle={16}
                   showsVerticalScrollIndicator={false}
                   keyboardDismissMode="on-drag"
                   fadingEdgeLength={EDGE_FADE}
                 />
                 <ScrollToBottomFab
-                  visible={computerAwayFromBottom}
+                  visible={computerScroll.awayFromBottom}
                   hasUnread={computerUnread}
-                  onPress={scrollComputerToEnd}
+                  onPress={computerScroll.scrollToBottom}
                   styles={styles}
                   colors={colors}
                 />
@@ -1084,14 +1335,30 @@ export default function ChatScreen() {
           </View>
 
           {/* Computer Composer — same pill/expand structure as Chat, sans images. */}
-          <View style={styles.composerWrap}>
+          <WorkingIndicator active={computerSending} />
+          <View style={[styles.composerWrap, { paddingBottom: 6 + insets.bottom }]}>
+            {(() => {
+              const hasText = computerDraft.trim().length > 0;
+              const dictationInlineComputer = isListening && !hasText;
+              const dictationBelowComputer = isListening && hasText;
+              const isExpandedComputer = computerExpanded || dictationBelowComputer;
+              return (
             <GlassView
               style={[
                 styles.shell,
-                computerExpanded ? styles.shellExpanded : styles.shellPill,
+                isExpandedComputer ? styles.shellExpanded : styles.shellPill,
               ]}
             >
-              {computerExpanded ? (
+              {dictationInlineComputer ? (
+                <View style={styles.formPill}>
+                  <DictationRecordingBar
+                    levels={dictation.levels}
+                    elapsedMs={dictation.elapsedMs}
+                    onCancel={() => void dictation.cancel()}
+                    onConfirm={() => void dictation.stop()}
+                  />
+                </View>
+              ) : isExpandedComputer ? (
                 <View style={styles.formExpanded}>
                   <TextInput
                     multiline
@@ -1135,29 +1402,27 @@ export default function ChatScreen() {
                           filled={isListening}
                         />
                       </Pressable>
-                      <Pressable
-                        onPress={() => void sendComputer()}
-                        disabled={
-                          !canSubmitComputer || desktopState !== "connected"
+                      <AnimatedSubmitButton
+                        canSubmit={
+                          canSubmitComputer && desktopState === "connected"
                         }
+                        onPress={() => void sendComputer()}
+                        styles={styles}
+                        colors={colors}
                         accessibilityLabel="Send message to your computer"
-                        style={[
-                          styles.submitButton,
-                          (!canSubmitComputer ||
-                            desktopState !== "connected") &&
-                            styles.submitDisabled,
-                        ]}
-                        hitSlop={4}
-                      >
-                        <Icon
-                          name="arrow-up"
-                          size={14}
-                          color={colors.accentForeground}
-                          weight="heavy"
-                        />
-                      </Pressable>
+                      />
                     </View>
                   </View>
+                  {dictationBelowComputer && (
+                    <View style={styles.dictationRow}>
+                      <DictationRecordingBar
+                        levels={dictation.levels}
+                        elapsedMs={dictation.elapsedMs}
+                        onCancel={() => void dictation.cancel()}
+                        onConfirm={() => void dictation.stop()}
+                      />
+                    </View>
+                  )}
                 </View>
               ) : (
                 <View style={styles.formPill}>
@@ -1169,17 +1434,13 @@ export default function ChatScreen() {
                     onSubmitEditing={() => void sendComputer()}
                     returnKeyType="send"
                     placeholder={
-                      isListening
-                        ? "Listening\u2026"
+                      dictation.isTranscribing
+                        ? "Transcribing\u2026"
                         : desktopState === "connected"
                           ? "Ask Stella to do something"
                           : "Connect to your computer first"
                     }
-                    placeholderTextColor={
-                      isListening
-                        ? colors.accent
-                        : fadeHex(colors.textMuted, 0.35)
-                    }
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
                     selectionColor={colors.accent}
                     underlineColorAndroid="transparent"
                     style={styles.inputPill}
@@ -1187,23 +1448,13 @@ export default function ChatScreen() {
                     editable={desktopState === "connected"}
                   />
                   {canSubmitComputer ? (
-                    <Pressable
+                    <AnimatedSubmitButton
+                      canSubmit={desktopState === "connected"}
                       onPress={() => void sendComputer()}
-                      disabled={desktopState !== "connected"}
+                      styles={styles}
+                      colors={colors}
                       accessibilityLabel="Send message to your computer"
-                      style={[
-                        styles.submitButton,
-                        desktopState !== "connected" && styles.submitDisabled,
-                      ]}
-                      hitSlop={4}
-                    >
-                      <Icon
-                        name="arrow-up"
-                        size={14}
-                        color={colors.accentForeground}
-                        weight="heavy"
-                      />
-                    </Pressable>
+                    />
                   ) : (
                     <Pressable
                       onPress={() => void toggleVoice()}
@@ -1231,6 +1482,8 @@ export default function ChatScreen() {
                 </View>
               )}
             </GlassView>
+              );
+            })()}
           </View>
         </>
       )}
@@ -1259,7 +1512,7 @@ export default function ChatScreen() {
 // ---------------------------------------------------------------------------
 
 const EDGE_FADE = 48;
-const MESSAGE_LIST_GAP = 24;
+const MESSAGE_LIST_GAP = 20;
 
 const makeStyles = (colors: Colors) => StyleSheet.create({
   screen: {
@@ -1332,6 +1585,9 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     paddingTop: 80,
     paddingBottom: EDGE_FADE,
   },
+  tailSpacer: {
+    height: TAIL_SPACER_PX,
+  },
   itemSeparator: {
     height: MESSAGE_LIST_GAP,
   },
@@ -1349,7 +1605,7 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
 
   // User bubble — desktop: .event-item.user
-  //   border-radius: 18px / tail 4px, color-mix(primary 10%), border borderStrong, max-width 85%
+  //   padding: 12, border-radius 18 / tail 4, color-mix(primary 10%), border borderStrong, max-width 85%
   userRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -1361,8 +1617,7 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     borderRadius: 18,
     borderBottomRightRadius: 4,
     maxWidth: "85%",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    padding: 12,
   },
   userText: {
     color: colors.text,
@@ -1403,13 +1658,15 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
 
   // ---- Composer ----
 
-  // Desktop: .composer { padding: 8px 24px 16px }
+  // Desktop: .composer { padding: 4px 24px 10px; gap: 8px }
+  // Bottom inset for the home indicator gets layered on inline below.
   composerWrap: {
     alignItems: "center",
     flexShrink: 0,
-    paddingBottom: Platform.OS === "ios" ? 4 : 12,
+    gap: 8,
+    paddingBottom: 6,
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 4,
   },
 
   // Attachment preview strip
@@ -1443,8 +1700,15 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     width: 20,
   },
 
-  // Shell — desktop: .composer-shell { background: var(--background); shadow-md; overflow: clip }
+  // Shell — desktop: .composer-shell {
+  //   background: var(--background);
+  //   border: 1px solid color-mix(border 60%, transparent);
+  //   box-shadow: var(--shadow-md);
+  //   overflow: clip;
+  // }
   shell: {
+    borderColor: fadeHex(colors.border, 0.6),
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
     width: "100%",
     shadowColor: "#000",
@@ -1460,34 +1724,35 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     borderRadius: 20,
   },
 
-  // Desktop: .composer-form { min-height: 56px; padding: 10px; gap: 8px }
+  // Desktop: .composer-form { min-height: 46px; padding: 7px 8px; gap: 8px }
   formPill: {
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
-    height: 56,
-    paddingHorizontal: 10,
+    minHeight: 46,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
   },
 
   formExpanded: {
     flexDirection: "column",
   },
 
-  // Desktop: .composer-input { font-size: 14px; line-height: 1.5 }
+  // Desktop: .composer-input { font-size: 14px; line-height: 1.5; min-h: 28px; max-h: 200px; padding: 2px 4px }
   inputPill: {
     color: colors.text,
     flex: 1,
     fontFamily: fonts.sans.regular,
     fontSize: 15,
     letterSpacing: -0.2,
-    lineHeight: 22,
-    maxHeight: 34,
-    paddingHorizontal: 6,
+    lineHeight: 21,
+    maxHeight: 28,
+    paddingHorizontal: 4,
     paddingVertical: 0,
     ...(Platform.OS === "android" ? { textAlignVertical: "center" as const } : {}),
   },
 
-  // Desktop: .composer-form.expanded .composer-input { padding: 14px 18px 4px; min-height: 44px }
+  // Desktop: .composer-form.expanded .composer-input { padding: 10px 16px 2px; min-height: 36px }
   inputExpanded: {
     color: colors.text,
     fontFamily: fonts.sans.regular,
@@ -1495,20 +1760,20 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     letterSpacing: -0.2,
     lineHeight: 22,
     maxHeight: 200,
-    minHeight: 44,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 4,
+    minHeight: 36,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 2,
   },
 
-  // Desktop: .composer-toolbar { padding: 4px 8px 8px; justify-content: space-between }
+  // Desktop: .composer-form.expanded .composer-toolbar { padding: 2px 8px 6px; space-between }
   toolbar: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingBottom: 10,
-    paddingHorizontal: 10,
-    paddingTop: 4,
+    paddingBottom: 6,
+    paddingHorizontal: 8,
+    paddingTop: 2,
   },
   toolbarLeft: {
     flexDirection: "row",
@@ -1521,9 +1786,22 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     gap: 8,
   },
 
+  // Desktop: .composer-dictation-row (only used in expanded mode when text is present)
+  dictationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    paddingBottom: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: fadeHex(colors.border, 0.5),
+  },
+
+  // Desktop: .chat-composer-icon-button--add { background: color-mix(foreground 6%, transparent) }
   addButton: {
     alignItems: "center",
-    backgroundColor: colors.muted,
+    backgroundColor: fadeHex(colors.text, 0.06),
     borderRadius: 15,
     height: 30,
     justifyContent: "center",
@@ -1539,12 +1817,10 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     justifyContent: "center",
     width: 30,
   },
-  submitDisabled: {
-    opacity: 0.4,
-  },
+  // Desktop: .chat-composer-icon-button--mic { background: transparent }
   micButton: {
     alignItems: "center",
-    backgroundColor: colors.muted,
+    backgroundColor: "transparent",
     borderRadius: 15,
     height: 30,
     justifyContent: "center",
