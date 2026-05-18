@@ -16,6 +16,7 @@ export type IconName =
   | "arrow-up-right"
   | "mic"
   | "mic-off"
+  | "check"
   | "message-square"
   | "monitor"
   | "user";
@@ -29,6 +30,7 @@ const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name
   "arrow-up-right": "arrow-up-right",
   "mic": "mic",
   "mic-off": "mic-off",
+  "check": "check",
   "message-square": "message-square",
   "monitor": "monitor",
   "user": "user",
@@ -43,6 +45,7 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "arrow-up-right": "arrow.up.right",
   "mic": "mic",
   "mic-off": "mic.slash",
+  "check": "checkmark",
   "message-square": "message",
   "monitor": "desktopcomputer",
   "user": "person.crop.circle",
