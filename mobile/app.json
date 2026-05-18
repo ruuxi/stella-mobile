@@ -77,14 +77,7 @@
           "bundleIdentifier": "com.stella.mobile.LiveActivities",
           "groupIdentifier": "group.com.stella.mobile.liveactivities",
           "enablePushNotifications": false,
-          "widgets": [
-            {
-              "name": "ComputerActivity",
-              "displayName": "Stella Computer",
-              "description": "Tracks the progress of a Stella request running on your computer.",
-              "supportedFamilies": []
-            }
-          ]
+          "widgets": []
         }
       ],
       [
