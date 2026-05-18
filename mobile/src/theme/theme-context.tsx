@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { useColorScheme } from "react-native";
+import { Appearance, useColorScheme } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { type Colors, lightColors, darkColors } from "./colors";
 import { themes, defaultThemeId, getThemeById, type StellaTheme } from "./themes";
@@ -73,6 +73,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       void AsyncStorage.setItem(THEME_KEY, id);
     }
   };
+
+  // Propagate the JS theme preference down to UIKit so system chrome (Liquid
+  // Glass surfaces, native popovers, the keyboard appearance, the status bar
+  // trait, etc.) follows the in-app picker rather than the OS-level setting.
+  // Without this, picking "Light" while the phone is in dark mode leaves
+  // every `GlassView`/`GlassCard` rendering dark over the light JS palette.
+  useEffect(() => {
+    if (!loaded) return;
+    Appearance.setColorScheme(
+      preference === "system" ? "unspecified" : preference,
+    );
+  }, [loaded, preference]);
 
   const isDark =
     preference === "system" ? systemScheme === "dark" : preference === "dark";
