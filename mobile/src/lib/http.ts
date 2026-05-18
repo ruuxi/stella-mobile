@@ -37,13 +37,19 @@ const readErrorMessage = async (response: Response) => {
   return "Could not complete that request. Try again.";
 };
 
-async function requestJson(path: string, request: JsonRequest) {
+async function requestJson(
+  path: string,
+  request: JsonRequest,
+  options?: { anonymous?: boolean },
+) {
   assert(env.convexSiteUrl, "EXPO_PUBLIC_CONVEX_SITE_URL is not configured.");
-  const token = await getConvexToken();
+  const authHeader = options?.anonymous
+    ? null
+    : `Bearer ${await getConvexToken()}`;
   const response = await fetch(`${env.convexSiteUrl}${path}`, {
     ...request,
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...(authHeader ? { Authorization: authHeader } : {}),
       ...(request.method === "POST"
         ? { "Content-Type": "application/json" }
         : {}),
@@ -73,6 +79,21 @@ export const postJson = (
     body: JSON.stringify(body),
     headers: options?.headers,
   });
+
+export const postJsonAnonymous = (
+  path: string,
+  body: unknown,
+  options?: { headers?: Record<string, string> },
+) =>
+  requestJson(
+    path,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: options?.headers,
+    },
+    { anonymous: true },
+  );
 
 function executeStream(
   path: string,
