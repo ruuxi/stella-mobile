@@ -88,10 +88,9 @@
         }
       ],
       [
-        "expo-speech-recognition",
+        "expo-audio",
         {
-          "microphonePermission": "Stella needs access to your microphone for voice input.",
-          "speechRecognitionPermission": "Stella needs speech recognition to convert your voice to text."
+          "microphonePermission": "Stella needs access to your microphone for voice input."
         }
       ]
     ],
