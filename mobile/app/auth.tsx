@@ -64,7 +64,7 @@ export default function AuthCallbackScreen() {
         });
 
         if (cancelled) return;
-        router.replace("/stella");
+        router.replace("/chat");
       } catch (error) {
         if (cancelled) return;
         setError(readCallbackError(error));

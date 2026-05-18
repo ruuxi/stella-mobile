@@ -6,7 +6,6 @@ import { router } from "expo-router";
 import { postJson } from "./http";
 import { getOrCreateMobileDeviceId } from "./phone-access";
 import { getNotificationsMuted } from "./notifications-prefs";
-import { setChatScreenMode } from "./chat-screen-mode";
 
 const COMPUTER_REPLY_CATEGORY = "computer_reply";
 
@@ -119,12 +118,11 @@ export async function installNotificationCategoriesAndListeners(): Promise<() =>
         return;
       }
       if (data?.kind === "computer_reply") {
-        setChatScreenMode("computer");
         try {
-          router.replace("/chat");
+          router.replace("/computer");
         } catch {
-          // Router not yet mounted on cold start; the chat screen is the
-          // post-auth default landing anyway.
+          // Router not yet mounted on cold start; the computer screen will
+          // be the natural landing once the user opens the app.
         }
       }
     },

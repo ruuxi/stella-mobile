@@ -30,9 +30,8 @@ import { type Colors } from "../../src/theme/colors";
 import { useColors, useTheme } from "../../src/theme/theme-context";
 import { soften } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
-import { ChatModePill } from "../../src/components/ChatModePill";
 
-type TabId = "chat" | "stella" | "account";
+type TabId = "chat" | "computer" | "account";
 
 const TABS: {
   id: TabId;
@@ -41,16 +40,19 @@ const TABS: {
   href: string;
 }[] = [
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
-  { id: "stella", label: "Desktop", icon: "monitor", href: "/stella" },
+  { id: "computer", label: "Computer", icon: "monitor", href: "/computer" },
   { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
 
 const SIDEBAR_WIDTH = 232;
 
-function readActiveTab(pathname: string): TabId {
-  if (pathname === "/stella") return "stella";
+function readActiveTab(pathname: string): TabId | null {
+  if (pathname === "/computer") return "computer";
   if (pathname === "/account") return "account";
-  return "chat";
+  if (pathname === "/chat") return "chat";
+  // /stella (desktop WebView) is reached from the composer "+" menu and
+  // doesn't correspond to a sidebar entry — leave nothing highlighted.
+  return null;
 }
 
 function Sidebar({
@@ -60,7 +62,7 @@ function Sidebar({
   styles,
   tabs,
 }: {
-  activeTab: TabId;
+  activeTab: TabId | null;
   onSelectTab: (tab: TabId) => void;
   colors: Colors;
   styles: ReturnType<typeof makeStyles>;
@@ -262,11 +264,6 @@ export default function MainLayout() {
           <View style={styles.wideLayout}>
             <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
             <View style={styles.content}>
-              {activeTab === "chat" && (
-                <View style={styles.wideChatHeader}>
-                  <ChatModePill />
-                </View>
-              )}
               <View style={styles.contentSlot}>
                 <Slot />
               </View>
@@ -311,9 +308,7 @@ export default function MainLayout() {
                     <Icon name="menu" size={22} color={colors.text} weight="semibold" />
                   </Pressable>
                 </View>
-                <View style={styles.topBarCenter} pointerEvents="box-none">
-                  {activeTab === "chat" ? <ChatModePill /> : null}
-                </View>
+                <View style={styles.topBarCenter} pointerEvents="box-none" />
                 <View style={styles.topBarSide} />
               </View>
 

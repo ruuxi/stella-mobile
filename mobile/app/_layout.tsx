@@ -77,6 +77,7 @@ function AuthenticatedLayout() {
     const onIndex = pathname === "/" || pathname === "";
     const onMain =
       pathname.startsWith("/chat") ||
+      pathname.startsWith("/computer") ||
       pathname.startsWith("/stella") ||
       pathname.startsWith("/account");
 
