@@ -9,6 +9,8 @@ import {
   Text,
   View,
 } from "react-native";
+import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import { Icon } from "../../src/components/Icon";
 import { authClient } from "../../src/lib/auth-client";
@@ -27,7 +29,6 @@ import {
   setNotificationsMuted,
   subscribeNotificationsMuted,
 } from "../../src/lib/notifications-prefs";
-import { SignInPrompt } from "../../src/components/SignInPrompt";
 import { GlassCard } from "../../src/components/GlassCard";
 import { type Colors } from "../../src/theme/colors";
 import {
@@ -65,7 +66,10 @@ export default function AccountScreen() {
     isDark,
   } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const session = authClient.useSession();
+  const guest = isGuest();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [pairedDesktops, setPairedDesktops] = useState<StoredPhoneAccess[]>([]);
@@ -83,7 +87,14 @@ export default function AccountScreen() {
 
   const user = session.data?.user;
   const email = user?.email ?? "";
-  const name = user?.name || email || "Account";
+  const displayName = user?.name?.trim() || email;
+  // The whole "you have an account" surface — name/email header, upgrade card,
+  // paired computers, sign-out, delete — only makes sense when the user has a
+  // real session. Settings, appearance, notifications, and legal all work
+  // without one, so we render the page either way and just hide the bits
+  // that need an identity.
+  const isSignedIn = Boolean(user) && !guest;
+  const showLoadingHeader = !guest && session.isPending && !user;
 
   const refreshPaired = useCallback(async () => {
     const next = await listStoredPairedPhoneAccess();
@@ -205,52 +216,70 @@ export default function AccountScreen() {
     void setNotificationsMuted(!next);
   };
 
-  if (isGuest()) {
-    return (
-      <View style={styles.screen}>
-        <SignInPrompt message="Sign in to manage your account, subscription, and preferences." />
-      </View>
-    );
-  }
-
-  if (!user) {
-    return (
-      <View style={styles.screen}>
-        <Text style={styles.title}>Account</Text>
-        <Text style={styles.body}>
-          {isSigningOut ? "Signing out\u2026" : "Loading session\u2026"}
-        </Text>
-      </View>
-    );
-  }
-
   return (
     <ScrollView
       style={styles.screen}
-      contentContainerStyle={styles.scrollContent}
+      contentContainerStyle={[
+        styles.scrollContent,
+        { paddingBottom: 32 + insets.bottom },
+      ]}
       keyboardShouldPersistTaps="handled"
     >
-      <Text style={styles.title}>{name}</Text>
-      {email !== name && <Text style={styles.body}>{email}</Text>}
+      <Text style={styles.title}>Settings</Text>
 
-      <GlassCard radius={14} ringed style={styles.upgradeCardWrap}>
-        <Pressable
-          onPress={openUpgrade}
-          accessibilityLabel="Upgrade your Stella plan"
-          style={({ pressed }) => [
-            styles.upgradeCard,
-            pressed && styles.upgradeCardPressed,
-          ]}
-        >
-          <View style={styles.upgradeCopy}>
-            <Text style={styles.upgradeTitle}>Stella Pro</Text>
-            <Text style={styles.upgradeSub}>
-              Higher usage, faster replies, voice and image.
+      {isSignedIn ? (
+        <>
+          <View style={styles.identityBlock}>
+            <Text style={styles.identityName} numberOfLines={1}>
+              {displayName}
             </Text>
+            {email && email !== displayName ? (
+              <Text style={styles.identityEmail} numberOfLines={1}>
+                {email}
+              </Text>
+            ) : null}
           </View>
-          <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
-        </Pressable>
-      </GlassCard>
+
+          <GlassCard radius={14} ringed style={styles.upgradeCardWrap}>
+            <Pressable
+              onPress={openUpgrade}
+              accessibilityLabel="Upgrade your Stella plan"
+              style={({ pressed }) => [
+                styles.upgradeCard,
+                pressed && styles.upgradeCardPressed,
+              ]}
+            >
+              <View style={styles.upgradeCopy}>
+                <Text style={styles.upgradeTitle}>Stella Pro</Text>
+                <Text style={styles.upgradeSub}>
+                  Higher usage, faster replies, voice and image.
+                </Text>
+              </View>
+              <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
+            </Pressable>
+          </GlassCard>
+        </>
+      ) : showLoadingHeader ? (
+        <Text style={styles.body}>Loading session…</Text>
+      ) : (
+        <View style={styles.signInBlock}>
+          <Text style={styles.signInTitle}>Sign in to Stella</Text>
+          <Text style={styles.signInSub}>
+            Sync your account, manage paired computers, and unlock cloud
+            features.
+          </Text>
+          <Pressable
+            onPress={() => router.replace("/login")}
+            accessibilityLabel="Sign in to Stella"
+            style={({ pressed }) => [
+              styles.signInButton,
+              pressed && styles.signInButtonPressed,
+            ]}
+          >
+            <Text style={styles.signInButtonText}>Sign in</Text>
+          </Pressable>
+        </View>
+      )}
 
       <View style={styles.separator} />
 
@@ -327,58 +356,62 @@ export default function AccountScreen() {
         />
       </View>
 
-      <View style={styles.separator} />
+      {isSignedIn ? (
+        <>
+          <View style={styles.separator} />
 
-      <Text style={styles.sectionLabel}>Paired computers</Text>
-      {pairedDesktops.length === 0 ? (
-        <Text style={styles.emptyHint}>
-          No computers paired yet. Pair from the Desktop tab.
-        </Text>
-      ) : (
-        <View style={styles.pairedList}>
-          {pairedDesktops.map((access) => {
-            const label = platformLabelFor(
-              access,
-              desktopPlatforms[access.desktopDeviceId],
-            );
-            const removing =
-              removingDesktopId === access.desktopDeviceId;
-            return (
-              <GlassCard
-                key={access.desktopDeviceId}
-                radius={12}
-                ringed
-                style={styles.pairedRow}
-              >
-                <View style={styles.pairedCopy}>
-                  <Text style={styles.pairedName}>{label}</Text>
-                  <Text style={styles.pairedSub}>
-                    Paired{" "}
-                    {new Date(access.approvedAt).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                    })}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => confirmForgetDesktop(access)}
-                  disabled={removing}
-                  accessibilityLabel={`Forget ${label}`}
-                  style={({ pressed }) => [
-                    styles.forgetButton,
-                    pressed && styles.forgetButtonPressed,
-                    removing && styles.forgetButtonDisabled,
-                  ]}
-                >
-                  <Text style={styles.forgetText}>
-                    {removing ? "\u2026" : "Forget"}
-                  </Text>
-                </Pressable>
-              </GlassCard>
-            );
-          })}
-        </View>
-      )}
+          <Text style={styles.sectionLabel}>Paired computers</Text>
+          {pairedDesktops.length === 0 ? (
+            <Text style={styles.emptyHint}>
+              No computers paired yet. Pair from the Desktop tab.
+            </Text>
+          ) : (
+            <View style={styles.pairedList}>
+              {pairedDesktops.map((access) => {
+                const label = platformLabelFor(
+                  access,
+                  desktopPlatforms[access.desktopDeviceId],
+                );
+                const removing =
+                  removingDesktopId === access.desktopDeviceId;
+                return (
+                  <GlassCard
+                    key={access.desktopDeviceId}
+                    radius={12}
+                    ringed
+                    style={styles.pairedRow}
+                  >
+                    <View style={styles.pairedCopy}>
+                      <Text style={styles.pairedName}>{label}</Text>
+                      <Text style={styles.pairedSub}>
+                        Paired{" "}
+                        {new Date(access.approvedAt).toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => confirmForgetDesktop(access)}
+                      disabled={removing}
+                      accessibilityLabel={`Forget ${label}`}
+                      style={({ pressed }) => [
+                        styles.forgetButton,
+                        pressed && styles.forgetButtonPressed,
+                        removing && styles.forgetButtonDisabled,
+                      ]}
+                    >
+                      <Text style={styles.forgetText}>
+                        {removing ? "\u2026" : "Forget"}
+                      </Text>
+                    </Pressable>
+                  </GlassCard>
+                );
+              })}
+            </View>
+          )}
+        </>
+      ) : null}
 
       <View style={styles.separator} />
 
@@ -411,34 +444,38 @@ export default function AccountScreen() {
         </GlassCard>
       </View>
 
-      <Pressable
-        onPress={() => void signOut()}
-        disabled={isSigningOut || isDeletingAccount}
-        accessibilityLabel="Sign out of Stella"
-        style={({ pressed }) => [
-          styles.signOut,
-          pressed && styles.signOutPressed,
-          (isSigningOut || isDeletingAccount) && styles.signOutDisabled,
-        ]}
-      >
-        <Text style={styles.signOutText}>
-          {isSigningOut ? "Signing out\u2026" : "Sign out"}
-        </Text>
-      </Pressable>
+      {isSignedIn ? (
+        <>
+          <Pressable
+            onPress={() => void signOut()}
+            disabled={isSigningOut || isDeletingAccount}
+            accessibilityLabel="Sign out of Stella"
+            style={({ pressed }) => [
+              styles.signOut,
+              pressed && styles.signOutPressed,
+              (isSigningOut || isDeletingAccount) && styles.signOutDisabled,
+            ]}
+          >
+            <Text style={styles.signOutText}>
+              {isSigningOut ? "Signing out\u2026" : "Sign out"}
+            </Text>
+          </Pressable>
 
-      <Pressable
-        onPress={confirmDeleteAccount}
-        disabled={isDeletingAccount || isSigningOut}
-        accessibilityLabel="Delete your Stella account"
-        style={({ pressed }) => [
-          styles.deleteAccountLink,
-          pressed && styles.deleteAccountLinkPressed,
-        ]}
-      >
-        <Text style={styles.deleteAccountLinkText}>
-          {isDeletingAccount ? "Deleting account\u2026" : "Delete account"}
-        </Text>
-      </Pressable>
+          <Pressable
+            onPress={confirmDeleteAccount}
+            disabled={isDeletingAccount || isSigningOut}
+            accessibilityLabel="Delete your Stella account"
+            style={({ pressed }) => [
+              styles.deleteAccountLink,
+              pressed && styles.deleteAccountLinkPressed,
+            ]}
+          >
+            <Text style={styles.deleteAccountLinkText}>
+              {isDeletingAccount ? "Deleting account\u2026" : "Delete account"}
+            </Text>
+          </Pressable>
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -478,8 +515,24 @@ const makeStyles = (colors: Colors) =>
       marginBottom: 10,
       textTransform: "uppercase",
     },
+    identityBlock: {
+      gap: 2,
+      marginTop: 10,
+    },
+    identityName: {
+      color: colors.text,
+      fontFamily: fonts.sans.semiBold,
+      fontSize: 17,
+      letterSpacing: -0.3,
+    },
+    identityEmail: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.regular,
+      fontSize: 13,
+      letterSpacing: -0.1,
+    },
     upgradeCardWrap: {
-      marginTop: 20,
+      marginTop: 16,
     },
     upgradeCard: {
       alignItems: "center",
@@ -490,6 +543,42 @@ const makeStyles = (colors: Colors) =>
     },
     upgradeCardPressed: {
       opacity: 0.85,
+    },
+    signInBlock: {
+      gap: 6,
+      marginTop: 14,
+      marginBottom: 4,
+    },
+    signInTitle: {
+      color: colors.text,
+      fontFamily: fonts.sans.semiBold,
+      fontSize: 17,
+      letterSpacing: -0.3,
+    },
+    signInSub: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.regular,
+      fontSize: 14,
+      letterSpacing: -0.1,
+      lineHeight: 20,
+    },
+    signInButton: {
+      alignItems: "center",
+      alignSelf: "flex-start",
+      backgroundColor: colors.accent,
+      borderRadius: 22,
+      marginTop: 10,
+      paddingHorizontal: 24,
+      paddingVertical: 11,
+    },
+    signInButtonPressed: {
+      backgroundColor: colors.accentHover,
+    },
+    signInButtonText: {
+      color: colors.accentForeground,
+      fontFamily: fonts.sans.semiBold,
+      fontSize: 15,
+      letterSpacing: -0.3,
     },
     upgradeCopy: {
       flex: 1,
