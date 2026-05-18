@@ -19,6 +19,7 @@ export type IconName =
   | "check"
   | "message-square"
   | "monitor"
+  | "settings"
   | "user";
 
 const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name"]> = {
@@ -33,6 +34,7 @@ const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name
   "check": "check",
   "message-square": "message-square",
   "monitor": "monitor",
+  "settings": "settings",
   "user": "user",
 };
 
@@ -48,6 +50,7 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "check": "checkmark",
   "message-square": "message",
   "monitor": "desktopcomputer",
+  "settings": "gearshape",
   "user": "person.crop.circle",
 };
 

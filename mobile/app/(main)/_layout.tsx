@@ -42,10 +42,10 @@ const TABS: {
 }[] = [
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
   { id: "stella", label: "Desktop", icon: "monitor", href: "/stella" },
-  { id: "account", label: "Account", icon: "user", href: "/account" },
+  { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
 
-const SIDEBAR_WIDTH = 260;
+const SIDEBAR_WIDTH = 232;
 
 function readActiveTab(pathname: string): TabId {
   if (pathname === "/stella") return "stella";
@@ -200,114 +200,147 @@ export default function MainLayout() {
   const closePanDrawer = makeCloseGesture();
 
   // -- Animated styles --
-  const drawerStyle = useAnimatedStyle(() => ({
+  // Sidebar sits underneath the foreground at rest. As the drawer opens we
+  // gently fade and parallax it in (-12px → 0) so the reveal reads as the
+  // content lifting away rather than the menu sliding in.
+  const sidebarStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(drawerProgress.value, [0, 0.4, 1], [0, 0.6, 1]),
+    transform: [
+      {
+        translateX: interpolate(drawerProgress.value, [0, 1], [-12, 0]),
+      },
+    ],
+  }));
+
+  // Foreground (top bar + content) is the elevated layer. It slides right
+  // to expose the sidebar parked beneath it.
+  const foregroundStyle = useAnimatedStyle(() => ({
     transform: [
       {
         translateX: interpolate(
           drawerProgress.value,
           [0, 1],
-          [-SIDEBAR_WIDTH, 0],
+          [0, SIDEBAR_WIDTH],
         ),
       },
     ],
   }));
 
-  const backdropStyle = useAnimatedStyle(() => ({
-    opacity: drawerProgress.value,
+  // Soft scrim painted onto the foreground itself — a faint dim while the
+  // drawer is open, plus a tap-to-close target. Lives above content but
+  // travels with the foreground so it never covers the sidebar.
+  const scrimStyle = useAnimatedStyle(() => ({
+    opacity: drawerProgress.value * 0.18,
   }));
 
+  const gradient = (
+    <LinearGradient
+      colors={[
+        soften(colors.accent, colors.background, isDark ? 0.06 : 0.09),
+        colors.background,
+        soften(colors.ok, colors.background, isDark ? 0.04 : 0.06),
+      ]}
+      locations={[0, 0.5, 1]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={StyleSheet.absoluteFill}
+    />
+  );
+
   return (
-    <SafeAreaView style={styles.shell}>
+    // edges=[] disables SafeAreaView's auto-padding so every layer below
+    // (gradient, sidebar, foreground) can extend edge-to-edge through the
+    // status-bar and home-indicator regions. The chrome that needs to clear
+    // those areas (top bar, chat composer, scrollable content) reads
+    // `useSafeAreaInsets()` and pads itself.
+    <SafeAreaView style={styles.shell} edges={[]}>
       <StatusBar style={isDark ? "light" : "dark"} />
-      <LinearGradient
-        colors={[
-          soften(colors.accent, colors.background, isDark ? 0.06 : 0.09),
-          colors.background,
-          soften(colors.ok, colors.background, isDark ? 0.04 : 0.06),
-        ]}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
 
       {wide ? (
-        <View style={styles.wideLayout}>
-          <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
-          <View style={styles.content}>
-            {activeTab === "chat" && (
-              <View style={styles.wideChatHeader}>
-                <ChatModePill />
+        <>
+          {gradient}
+          <View style={styles.wideLayout}>
+            <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
+            <View style={styles.content}>
+              {activeTab === "chat" && (
+                <View style={styles.wideChatHeader}>
+                  <ChatModePill />
+                </View>
+              )}
+              <View style={styles.contentSlot}>
+                <Slot />
               </View>
-            )}
-            <View style={styles.contentSlot}>
-              <Slot />
             </View>
           </View>
-        </View>
+        </>
       ) : (
         <View style={styles.narrowLayout}>
-          <View style={styles.topBar}>
-            <View style={styles.topBarSide}>
-              <Pressable
-                onPress={openSidebar}
-                hitSlop={8}
-                accessibilityLabel="Open navigation"
-                style={styles.hamburger}
-              >
-                <Icon name="menu" size={22} color={colors.text} weight="semibold" />
-              </Pressable>
-            </View>
-            <View style={styles.topBarCenter} pointerEvents="box-none">
-              {activeTab === "chat" ? <ChatModePill /> : null}
-            </View>
-            <View style={styles.topBarSide} />
-          </View>
+          {/* Sidebar parked underneath at the left edge. Always mounted,
+              statically positioned, edge-to-edge vertically. The foreground
+              (below) slides right to reveal it, so the menu reads as a layer
+              the app is lifting off of rather than a panel sliding in over
+              the content. */}
+          <Animated.View
+            pointerEvents={sidebarOpen ? "auto" : "none"}
+            style={[styles.sidebarLayer, sidebarStyle]}
+          >
+            <Sidebar
+              activeTab={activeTab}
+              onSelectTab={navigate}
+              colors={colors}
+              styles={styles}
+              tabs={TABS}
+            />
+          </Animated.View>
 
-          <View style={styles.content}>
-            <Slot />
-          </View>
-
-          {/* Backdrop — always rendered, animated opacity */}
-          <GestureDetector gesture={closePanBackdrop}>
-            <Animated.View
-              pointerEvents={sidebarOpen ? "auto" : "none"}
-              style={[
-                styles.backdrop,
-                { top: -insets.top, bottom: -insets.bottom },
-                backdropStyle,
-              ]}
-            >
-              <Pressable
-                onPress={closeSidebar}
-                style={StyleSheet.absoluteFill}
-              />
-            </Animated.View>
-          </GestureDetector>
-
-          {/* Drawer */}
+          {/* Foreground — the elevated layer. Top bar + content travel
+              together, with a soft left-edge shadow for depth, and a scrim
+              painted on top so taps behind the controls dismiss the drawer
+              without ever obscuring the sidebar. */}
           <GestureDetector gesture={closePanDrawer}>
-            <Animated.View
-              pointerEvents={sidebarOpen ? "auto" : "none"}
-              style={[
-                styles.drawerShell,
-                { top: -insets.top, bottom: -insets.bottom },
-                drawerStyle,
-              ]}
-            >
-              <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
+            <Animated.View style={[styles.foregroundLayer, foregroundStyle]}>
+              {gradient}
+              <View style={[styles.topBar, { paddingTop: insets.top }]}>
+                <View style={styles.topBarSide}>
+                  <Pressable
+                    onPress={openSidebar}
+                    hitSlop={8}
+                    accessibilityLabel="Open navigation"
+                    style={styles.hamburger}
+                  >
+                    <Icon name="menu" size={22} color={colors.text} weight="semibold" />
+                  </Pressable>
+                </View>
+                <View style={styles.topBarCenter} pointerEvents="box-none">
+                  {activeTab === "chat" ? <ChatModePill /> : null}
+                </View>
+                <View style={styles.topBarSide} />
+              </View>
+
+              <View style={styles.content}>
+                <Slot />
+              </View>
+
+              {/* Scrim — sits on top of the foreground while the drawer is
+                  open. Tap anywhere on the visible app area to close. */}
+              <Animated.View
+                pointerEvents={sidebarOpen ? "auto" : "none"}
+                style={[styles.foregroundScrim, scrimStyle]}
+              >
+                <Pressable
+                  onPress={closeSidebar}
+                  style={StyleSheet.absoluteFill}
+                  accessibilityLabel="Close navigation"
+                />
+              </Animated.View>
             </Animated.View>
           </GestureDetector>
 
-          {/* Invisible left-edge zone for swipe-to-open */}
+          {/* Invisible left-edge zone for swipe-to-open. Above the
+              foreground so it can intercept the gesture before scrolls. */}
           {!sidebarOpen && (
             <GestureDetector gesture={openPan}>
-              <Animated.View
-                style={[
-                  styles.edgeZone,
-                  { top: -insets.top, bottom: -insets.bottom },
-                ]}
-              />
+              <Animated.View style={styles.edgeZone} />
             </GestureDetector>
           )}
         </View>
@@ -435,29 +468,48 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     color: colors.accent,
   },
 
-  // Drawer overlay — phone only
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: colors.overlay,
-    zIndex: 4,
-  },
-  drawerShell: {
+  // Sidebar layer — sits underneath the foreground, anchored to the left
+  // edge. Stays mounted so swipe-to-open reveals an already-laid-out menu.
+  sidebarLayer: {
     bottom: 0,
     left: 0,
     position: "absolute",
     top: 0,
     width: SIDEBAR_WIDTH,
-    zIndex: 5,
+    zIndex: 1,
   },
 
-  // Invisible left-edge swipe zone
+  // Foreground layer — elevated above the sidebar. Carries the canvas
+  // color so the parked sidebar doesn't show through the app, and a soft
+  // left-edge shadow so the layering reads when the drawer is open.
+  foregroundLayer: {
+    flex: 1,
+    backgroundColor: colors.background,
+    zIndex: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: -2, height: 0 },
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    elevation: 12,
+  },
+
+  // Scrim painted on the foreground while the drawer is open. Dims the
+  // app slightly and provides a tap target to close.
+  foregroundScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000",
+    zIndex: 3,
+  },
+
+  // Invisible left-edge swipe zone — above the foreground so wheels/scrolls
+  // don't eat the open gesture.
   edgeZone: {
     bottom: 0,
     left: 0,
     position: "absolute",
     top: 0,
     width: 25,
-    zIndex: 3,
+    zIndex: 4,
   },
 
   // Shared content area
