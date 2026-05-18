@@ -64,12 +64,13 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     undefined,
   );
   const [status, setStatus] = useState<DictationStatus>("idle");
-  // Only poll metering while actively recording — idle polling can touch a
-  // disposed native shared object after Fast Refresh / unmount.
-  const recorderState = useAudioRecorderState(
-    recorder,
-    status === "recording" ? RECORDER_TICK_MS : 60_000,
-  );
+  // expo-audio's `useAudioRecorderState` only sets up its polling interval
+  // once on `[recorder.id]`, so changing the interval after status flips to
+  // "recording" is silently ignored — that's why the waveform never moved.
+  // Poll at a steady high rate; while idle `getStatus()` returns the static
+  // idle snapshot, which is cheap, and the cleanup `clearInterval` covers
+  // unmount before the native shared object is disposed.
+  const recorderState = useAudioRecorderState(recorder, RECORDER_TICK_MS);
 
   const [levels, setLevels] = useState<number[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
