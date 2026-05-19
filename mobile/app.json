@@ -68,6 +68,7 @@
           "recordAudioAndroid": false
         }
       ],
+      "./plugins/with-camera-barcode-scanning",
       "expo-font",
       "expo-image",
       "expo-notifications",
