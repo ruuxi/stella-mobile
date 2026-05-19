@@ -90,6 +90,19 @@ const SCROLL_AWAY_FROM_BOTTOM_THRESHOLD = 96;
 /** Small acknowledgement scroll on send, matching desktop's ~48px nudge. */
 const SEND_NUDGE_PX = 48;
 
+/** Breathing room below the streaming row while auto-following (desktop parity). */
+const FOLLOW_BREATHING_PX = 72;
+
+/** Peek of the prior message when the stream row pins to the top. */
+const FOLLOW_TOP_PEEK_PX = 56;
+
+/** Adaptive lerp toward the follow target (mirrors desktop scroll management). */
+const FOLLOW_LERP_FACTOR_BASE = 0.3;
+const FOLLOW_LERP_FACTOR_MAX = 0.65;
+const FOLLOW_LERP_FACTOR_SCALE = 0.005;
+const FOLLOW_HARD_SNAP_PX = 240;
+const FOLLOW_MIN_STEP_PX = 0.5;
+
 /**
  * Tail spacer below the conversation while a turn is in progress, so a freshly
  * sent user message can land near the top and the streaming assistant message
@@ -167,9 +180,15 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
   const pinnedRef = useRef(true);
   const draggingRef = useRef(false);
   const lockedRef = useRef(false);
+  /** Live height of the streaming assistant row (FlashList layout lags text growth). */
+  const streamingRowHeightRef = useRef(0);
+  const followTargetRef = useRef<number | null>(null);
+  const followRafRef = useRef<number | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const streamingIndex = streaming ? messages.length - 1 : -1;
+  const streamingMessageId =
+    streamingIndex >= 0 ? messages[streamingIndex]?.id : null;
   const streamingTextLen =
     streamingIndex >= 0 ? messages[streamingIndex]?.text.length ?? 0 : 0;
 
@@ -181,7 +200,11 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
   }, [messages]);
 
   useEffect(() => {
-    if (streaming) lockedRef.current = false;
+    if (streaming) {
+      lockedRef.current = false;
+    } else {
+      streamingRowHeightRef.current = 0;
+    }
   }, [streaming, lastUserIndex]);
 
   const readScrollOffset = useCallback((list: FlashListRef<ChatMessage>) => {
@@ -197,10 +220,98 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
     return contentHRef.current;
   }, []);
 
-  const tickFollow = useCallback(() => {
-    if (draggingRef.current) return;
-    if (!pinnedRef.current) return;
-    if (lockedRef.current) return;
+  const readMaxScrollOffset = useCallback(
+    (list: FlashListRef<ChatMessage>, viewportH: number, contentH: number) =>
+      Math.max(0, contentH - viewportH),
+    [],
+  );
+
+  const stopFollowLoop = useCallback(() => {
+    if (followRafRef.current !== null) {
+      cancelAnimationFrame(followRafRef.current);
+      followRafRef.current = null;
+    }
+    followTargetRef.current = null;
+  }, []);
+
+  const scrollListToOffset = useCallback(
+    (list: FlashListRef<ChatMessage>, offset: number) => {
+      const clamped = Math.max(0, offset);
+      list.scrollToOffset({
+        offset: clamped,
+        animated: false,
+        skipFirstItemOffset: false,
+      });
+      offsetYRef.current = clamped;
+    },
+    [],
+  );
+
+  /**
+   * Resolve the scroll offset we want while streaming. `null` means idle;
+   * during layout warmup we target the list bottom instead of a row anchor.
+   */
+  const computeStreamingFollowTarget = useCallback((): number | null => {
+    if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
+      return null;
+    }
+
+    const list = listRef.current;
+    if (!list || streamingIndex < 0) return null;
+
+    const viewportH = layoutHRef.current || list.getWindowSize().height || 0;
+    if (viewportH <= 0) return null;
+
+    const contentH = readContentHeight(list);
+    if (contentH <= 0) return null;
+    contentHRef.current = contentH;
+
+    const currentOffset = readScrollOffset(list);
+    const layout = list.getLayout(streamingIndex);
+    const measuredHeight = streamingRowHeightRef.current;
+    const rowHeight = Math.max(measuredHeight, layout?.height ?? 0);
+
+    if (!layout || rowHeight <= 0) {
+      return readMaxScrollOffset(list, viewportH, contentH);
+    }
+
+    const rowTop = layout.y;
+    const rowBottom = rowTop + rowHeight;
+
+    if (rowTop <= currentOffset + 2) {
+      lockedRef.current = true;
+      return null;
+    }
+
+    const desiredOffset = rowBottom - viewportH + FOLLOW_BREATHING_PX;
+    const pinnedTop = Math.max(0, rowTop - FOLLOW_TOP_PEEK_PX);
+    return Math.min(pinnedTop, desiredOffset);
+  }, [
+    readContentHeight,
+    readMaxScrollOffset,
+    readScrollOffset,
+    streamingIndex,
+  ]);
+
+  const stepFollowLoop = useCallback(() => {
+    followRafRef.current = null;
+
+    if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
+      followTargetRef.current = null;
+      return;
+    }
+
+    if (streaming) {
+      const freshTarget = computeStreamingFollowTarget();
+      if (freshTarget === null) {
+        followTargetRef.current = null;
+        return;
+      }
+      followTargetRef.current = freshTarget;
+    }
+
+    const target = followTargetRef.current;
+    if (target === null) return;
 
     const list = listRef.current;
     if (!list) return;
@@ -210,54 +321,106 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
 
     const contentH = readContentHeight(list);
     if (contentH <= 0) return;
-    contentHRef.current = contentH;
 
-    const currentOffset = readScrollOffset(list);
-    const FOLLOW_PAD = 24;
+    const maxScroll = readMaxScrollOffset(list, viewportH, contentH);
+    const clampedTarget = Math.max(0, Math.min(maxScroll, target));
+    const current = readScrollOffset(list);
+    const diff = clampedTarget - current;
+    const absDiff = Math.abs(diff);
 
-    if (streamingIndex < 0) {
-      requestAnimationFrame(() => list.scrollToEnd({ animated: true }));
-      return;
-    }
-
-    const layout = list.getLayout(streamingIndex);
-
-    if (layout && layout.y <= currentOffset + 2) {
-      lockedRef.current = true;
-      return;
-    }
-
-    const distFromBottom = contentH - currentOffset - viewportH;
-    let targetOffset: number;
-
-    if (layout && layout.height > 0) {
-      const streamingBottomInViewport =
-        layout.y + layout.height - currentOffset;
-      if (streamingBottomInViewport < viewportH - FOLLOW_PAD) {
-        if (distFromBottom <= TAIL_SPACER_PX + FOLLOW_PAD) {
-          return;
-        }
-        targetOffset = contentH - viewportH - TAIL_SPACER_PX;
-      } else {
-        targetOffset = layout.y + layout.height - viewportH + FOLLOW_PAD;
-      }
-    } else {
-      if (distFromBottom <= TAIL_SPACER_PX + FOLLOW_PAD) {
+    if (absDiff < FOLLOW_MIN_STEP_PX) {
+      scrollListToOffset(list, clampedTarget);
+      if (!streaming) {
+        followTargetRef.current = null;
         return;
       }
-      targetOffset = contentH - viewportH - TAIL_SPACER_PX;
+    } else if (absDiff > FOLLOW_HARD_SNAP_PX) {
+      scrollListToOffset(list, clampedTarget);
+    } else {
+      const factor = Math.min(
+        FOLLOW_LERP_FACTOR_MAX,
+        FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
+      );
+      const lerpStep = diff * factor;
+      const stepPx =
+        Math.abs(lerpStep) >= FOLLOW_MIN_STEP_PX
+          ? lerpStep
+          : Math.sign(diff) * FOLLOW_MIN_STEP_PX;
+      scrollListToOffset(list, current + stepPx);
     }
 
-    if (targetOffset <= currentOffset + 1) return;
+    followRafRef.current = requestAnimationFrame(stepFollowLoop);
+  }, [
+    computeStreamingFollowTarget,
+    readContentHeight,
+    readMaxScrollOffset,
+    readScrollOffset,
+    scrollListToOffset,
+    streaming,
+  ]);
 
-    requestAnimationFrame(() => {
-      list.scrollToOffset({
-        offset: Math.max(0, targetOffset),
-        animated: true,
-        skipFirstItemOffset: false,
-      });
-    });
-  }, [readContentHeight, readScrollOffset, streamingIndex]);
+  const ensureFollowLoop = useCallback(() => {
+    if (followRafRef.current === null) {
+      followRafRef.current = requestAnimationFrame(stepFollowLoop);
+    }
+  }, [stepFollowLoop]);
+
+  const requestFollow = useCallback(
+    (options?: { allowBackward?: boolean }) => {
+      if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
+        return;
+      }
+
+      const list = listRef.current;
+      if (!list) return;
+
+      if (streamingIndex < 0) {
+        stopFollowLoop();
+        requestAnimationFrame(() => list.scrollToEnd({ animated: true }));
+        return;
+      }
+
+      const target = computeStreamingFollowTarget();
+      if (target === null) {
+        stopFollowLoop();
+        return;
+      }
+
+      const current = readScrollOffset(list);
+      if (
+        !options?.allowBackward &&
+        target <= current + 0.5
+      ) {
+        return;
+      }
+
+      followTargetRef.current = target;
+      ensureFollowLoop();
+    },
+    [
+      computeStreamingFollowTarget,
+      ensureFollowLoop,
+      readScrollOffset,
+      stopFollowLoop,
+      streamingIndex,
+    ],
+  );
+
+  useEffect(() => () => stopFollowLoop(), [stopFollowLoop]);
+
+  useEffect(() => {
+    if (!streaming) stopFollowLoop();
+  }, [streaming, stopFollowLoop]);
+
+  const onStreamingRowLayout = useCallback(
+    (height: number) => {
+      if (height <= 0) return;
+      const prev = streamingRowHeightRef.current;
+      streamingRowHeightRef.current = height;
+      if (height !== prev) requestFollow();
+    },
+    [requestFollow],
+  );
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -266,9 +429,18 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
       layoutHRef.current = layoutMeasurement.height;
       contentHRef.current = contentSize.height;
 
+      // The "near bottom" threshold must account for the reserved tail
+      // spacer below the streaming row — otherwise the send-nudge parks the
+      // user just outside the flat threshold and auto-follow never engages.
+      const tailReserved = streaming ? TAIL_SPACER_PX : 0;
       const hasOverflow = contentSize.height > layoutMeasurement.height + 2;
-      const distFromBottom =
-        contentSize.height - contentOffset.y - layoutMeasurement.height;
+      const distFromBottom = Math.max(
+        0,
+        contentSize.height -
+          contentOffset.y -
+          layoutMeasurement.height -
+          tailReserved,
+      );
       const pinned =
         !hasOverflow || distFromBottom <= SCROLL_AWAY_FROM_BOTTOM_THRESHOLD;
 
@@ -281,32 +453,35 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
 
       setAwayFromBottom(hasOverflow && !pinned);
     },
-    [],
+    [streaming],
   );
 
   const onScrollBeginDrag = useCallback(() => {
     draggingRef.current = true;
-  }, []);
+    stopFollowLoop();
+  }, [stopFollowLoop]);
 
   const onScrollEndDrag = useCallback(() => {
     draggingRef.current = false;
   }, []);
 
   const handleContentChange = useCallback(() => {
-    tickFollow();
-  }, [tickFollow]);
+    requestFollow();
+  }, [requestFollow]);
 
   useEffect(() => {
     if (!streaming) return;
-    tickFollow();
-  }, [streaming, streamingTextLen, tickFollow]);
+    requestFollow();
+    ensureFollowLoop();
+  }, [ensureFollowLoop, streaming, streamingTextLen, requestFollow]);
 
   const scrollToBottom = useCallback(() => {
     lockedRef.current = false;
+    stopFollowLoop();
     requestAnimationFrame(() =>
       listRef.current?.scrollToEnd({ animated: true }),
     );
-  }, []);
+  }, [stopFollowLoop]);
 
   const nudgeOnSend = useCallback(() => {
     lockedRef.current = false;
@@ -334,6 +509,9 @@ function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
     scrollToBottom,
     nudgeOnSend,
     awayFromBottom,
+    streamingMessageId,
+    listExtraData: streaming ? streamingTextLen : 0,
+    onStreamingRowLayout,
   };
 }
 
@@ -412,9 +590,11 @@ type ChatStyles = ReturnType<typeof makeStyles>;
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
+  onStreamLayout,
 }: {
   item: ChatMessage;
   styles: ChatStyles;
+  onStreamLayout?: (height: number) => void;
 }) {
   if (item.role === "user") {
     const thumbs = item.thumbnailUris ?? [];
@@ -455,6 +635,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
       delayLongPress={350}
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
+      onLayout={
+        onStreamLayout
+          ? (e) => onStreamLayout(e.nativeEvent.layout.height)
+          : undefined
+      }
     >
       <Text
         style={styles.assistantText}
@@ -989,10 +1174,18 @@ export function ChatPane({
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <FadeInMessage key={item.id}>
-        <ChatMessageRow item={item} styles={styles} />
+        <ChatMessageRow
+          item={item}
+          styles={styles}
+          onStreamLayout={
+            item.id === scroll.streamingMessageId
+              ? scroll.onStreamingRowLayout
+              : undefined
+          }
+        />
       </FadeInMessage>
     ),
-    [styles],
+    [scroll.onStreamingRowLayout, scroll.streamingMessageId, styles],
   );
   const renderSeparator = useCallback(
     () => <View style={styles.itemSeparator} />,
@@ -1056,6 +1249,7 @@ export function ChatPane({
               style={styles.messageList}
               contentContainerStyle={styles.list}
               data={messages}
+              extraData={scroll.listExtraData}
               renderItem={renderItem}
               keyExtractor={keyExtractor}
               getItemType={getItemType}
