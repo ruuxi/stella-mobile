@@ -1,55 +1,59 @@
-import { memo, useEffect, useRef } from "react";
-import { Animated, StyleSheet, View } from "react-native";
-import { StellaAnimation } from "./stella-animation";
+import { memo } from "react";
+import { StyleSheet, View } from "react-native";
+import {
+  StellaAnimation,
+  WORKING_INDICATOR_DISPLAY_PT,
+  WORKING_INDICATOR_GRID,
+  getWorkingIndicatorLayout,
+} from "./stella-animation";
 
-const CREATURE_WIDTH = 84;
-const CREATURE_HEIGHT = 48;
+const indicatorLayout = getWorkingIndicatorLayout();
 
-/** Fixed slot height — always reserved above the composer (padding + creature). */
+/** Fixed slot height — reserved above the composer (padding + circular viewport). */
 export const WORKING_INDICATOR_SLOT_HEIGHT =
-  6 + CREATURE_HEIGHT + 4;
+  6 + indicatorLayout.viewport + 4;
 
 interface WorkingIndicatorProps {
-  /** When true, the indicator fades in and animates. When false, it fades out. */
+  /** When true, the indicator is visible and the creature animates. */
   active: boolean;
 }
 
 /**
- * Small Stella creature shown above the composer while the assistant is
- * working. The slot height is always reserved so the composer and message
- * list never jump when the indicator appears or disappears.
+ * Stella above the composer.
+ *
+ * The GLView stays mounted forever, opacity is a plain static style (not
+ * `Animated.Value`): on iOS, wrapping a GLView in an `Animated.View` with
+ * opacity makes UIKit snapshot the GL surface into an offscreen buffer and
+ * reuse it, freezing the creature. Static opacity is just a CALayer property
+ * that composes normally over the live GL surface.
  */
 export const WorkingIndicator = memo(function WorkingIndicator({
   active,
 }: WorkingIndicatorProps) {
-  const opacity = useRef(new Animated.Value(active ? 1 : 0)).current;
-  const shownRef = useRef(active);
-
-  useEffect(() => {
-    Animated.timing(opacity, {
-      toValue: active ? 1 : 0,
-      duration: active ? 220 : 320,
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) shownRef.current = active;
-    });
-  }, [active, opacity]);
-
-  const mountGl = active || shownRef.current;
+  const { viewport, display } = indicatorLayout;
 
   return (
-    <View style={styles.slot}>
-      <Animated.View style={[styles.row, { opacity }]} pointerEvents="none">
-        {mountGl ? (
-          <View style={styles.creature}>
+    <View style={[styles.slot, { opacity: active ? 1 : 0 }]} pointerEvents="none">
+      <View style={styles.row} collapsable={false}>
+        <View
+          style={[styles.viewport, { width: viewport, height: viewport }]}
+          collapsable={false}
+        >
+          <View
+            style={[styles.canvasSlot, { width: display, height: display }]}
+            collapsable={false}
+          >
             <StellaAnimation
-              width={CREATURE_WIDTH}
-              height={CREATURE_HEIGHT}
+              width={WORKING_INDICATOR_GRID}
+              height={WORKING_INDICATOR_GRID}
+              displayWidth={WORKING_INDICATOR_DISPLAY_PT}
+              displayHeight={WORKING_INDICATOR_DISPLAY_PT}
+              frameSkip={1}
               paused={!active}
             />
           </View>
-        ) : null}
-      </Animated.View>
+        </View>
+      </View>
     </View>
   );
 });
@@ -58,7 +62,6 @@ const styles = StyleSheet.create({
   slot: {
     height: WORKING_INDICATOR_SLOT_HEIGHT,
     flexShrink: 0,
-    overflow: "hidden",
   },
   row: {
     height: WORKING_INDICATOR_SLOT_HEIGHT,
@@ -68,8 +71,13 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     justifyContent: "center",
   },
-  creature: {
-    width: CREATURE_WIDTH,
-    height: CREATURE_HEIGHT,
+  viewport: {
+    borderRadius: 999,
+    overflow: "hidden",
+    position: "relative",
+  },
+  canvasSlot: {
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

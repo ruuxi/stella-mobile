@@ -119,12 +119,30 @@ export default function ChatScreen() {
     const replyId = createId();
     setMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
 
-    const onDelta = (delta: string) => {
+    // Coalesce token-by-token deltas into one render per ~33ms so the JS
+    // thread isn't pinned (which would starve rAF and freeze the WebGL
+    // working indicator above the composer).
+    let pendingDelta = "";
+    let flushScheduled = false;
+    const flush = () => {
+      flushScheduled = false;
+      if (!pendingDelta) return;
+      const chunk = pendingDelta;
+      pendingDelta = "";
       setMessages((m) =>
         m.map((msg) =>
-          msg.id === replyId ? { ...msg, text: msg.text + delta } : msg,
+          msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
         ),
       );
+    };
+    const scheduleFlush = () => {
+      if (flushScheduled) return;
+      flushScheduled = true;
+      setTimeout(flush, 33);
+    };
+    const onDelta = (delta: string) => {
+      pendingDelta += delta;
+      scheduleFlush();
     };
 
     const streamFn = guest ? postStreamAnonymous : postStream;
@@ -142,6 +160,7 @@ export default function ChatScreen() {
         onDelta,
         streamOptions,
       );
+      flush();
       setMessages((m) =>
         m.map((msg) =>
           msg.id === replyId && !msg.text
@@ -151,6 +170,7 @@ export default function ChatScreen() {
       );
       notifySuccess();
     } catch (e) {
+      flush();
       setMessages((m) =>
         m.map((msg) =>
           msg.id === replyId

@@ -187,6 +187,26 @@ export const initRenderer = (
   const phasesArr = new Float32Array(3);
 
   const render = (time: number, birth: number, flash: number) => {
+    // expo-gl does not preserve GL state between `endFrameEXP()` calls the
+    // way browser WebGL does — re-bind program / buffer / texture / viewport
+    // every frame, otherwise only the first frame draws and the surface
+    // freezes afterwards.
+    gl.useProgram(program);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, glyphTexture);
+    gl.uniform1i(uGlyph, 0);
+
+    gl.viewport(0, 0, canvasW, canvasH);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
     const u = createAnimationUniforms(gridWidth, gridHeight, time);
 
     gl.uniform1f(uTime, time);
@@ -201,6 +221,7 @@ export const initRenderer = (
     if (uEyeOrigin) gl.uniform2f(uEyeOrigin, u.eyeOriginX, u.eyeOriginY);
     if (uEyeBlink) gl.uniform1f(uEyeBlink, u.blink);
 
+    gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.endFrameEXP();

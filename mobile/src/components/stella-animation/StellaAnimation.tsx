@@ -1,9 +1,8 @@
 // Mobile port of `desktop/src/shell/ascii-creature/StellaAnimation.tsx`.
 //
-// Renders the same WebGL fragment-shader Stella creature inside an `expo-gl`
-// `GLView`. Voice/analyser plumbing from the desktop version is stripped — on
-// mobile this component currently only services the working indicator and
-// onboarding hero animation, neither of which needs mic / output energy.
+// `width` / `height` are character-grid units (same as desktop), not layout pt.
+// Optional `displayWidth` / `displayHeight` set the GLView layout size in pt
+// (e.g. 70 for the working indicator — desktop's 350px canvas × scale(0.2)).
 
 import React, {
   useCallback,
@@ -22,6 +21,7 @@ import {
   buildGlyphAtlas,
   parseColor,
 } from "./glyph-atlas";
+import { getStellaRenderLayout } from "./layout";
 import { initRenderer, type StellaRenderer } from "./renderer";
 
 const TIME_RATE = 0.96;
@@ -33,20 +33,21 @@ export interface StellaAnimationHandle {
 }
 
 export interface StellaAnimationProps {
-  /** Visible width in pt — sizes the on-screen container only. */
+  /** Character-grid width — matches desktop `StellaAnimation` `width`. */
   width?: number;
-  /** Visible height in pt — sizes the on-screen container only. */
+  /** Character-grid height — matches desktop `StellaAnimation` `height`. */
   height?: number;
   /**
-   * Dot grid columns. Independent of `width`: a small indicator with `width=56`
-   * looks right with `columns ≈ 18`. The desktop equivalent uses 80.
+   * GLView layout width in pt. Defaults to the full supersampled canvas size
+   * (`width × 7 × 2.5`). Pass `WORKING_INDICATOR_DISPLAY_PT` (70) for the
+   * inline indicator instead of using CSS `transform: scale(0.2)`.
    */
-  columns?: number;
-  /** Dot grid rows. */
-  rows?: number;
-  /** Birth progress at mount: 1 = fully born, 0 = unborn. */
+  displayWidth?: number;
+  /** GLView layout height in pt. */
+  displayHeight?: number;
+  /** Skip frames between draws (desktop indicator uses 2). */
+  frameSkip?: number;
   initialBirthProgress?: number;
-  /** Pause the animation loop. */
   paused?: boolean;
 }
 
@@ -64,10 +65,11 @@ export const StellaAnimation = React.forwardRef<
   StellaAnimationProps
 >(function StellaAnimation(
   {
-    width = 56,
-    height = 32,
-    columns = 18,
-    rows = 12,
+    width = 80,
+    height = 40,
+    displayWidth,
+    displayHeight,
+    frameSkip = 0,
     initialBirthProgress = 1,
     paused = false,
   },
@@ -77,12 +79,26 @@ export const StellaAnimation = React.forwardRef<
   const colorsRef = useRef(colors);
   colorsRef.current = colors;
 
+  const layout = useMemo(
+    () => getStellaRenderLayout(width, height),
+    [width, height],
+  );
+
+  const layoutStyle = useMemo(
+    () => ({
+      width: displayWidth ?? layout.renderWidth,
+      height: displayHeight ?? layout.renderHeight,
+    }),
+    [displayWidth, displayHeight, layout.renderWidth, layout.renderHeight],
+  );
+
   const rendererRef = useRef<StellaRenderer | null>(null);
-  const rafRef = useRef<number | undefined>(undefined);
-  const animateRef = useRef<(() => void) | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pausedRef = useRef(paused);
+  const frameSkipRef = useRef(frameSkip);
   const timeRef = useRef(0);
   const lastFrameMsRef = useRef(0);
+  const frameCountRef = useRef(0);
   const birthRef = useRef(initialBirthProgress);
   const flashRef = useRef(0);
   const birthAnimRef = useRef<{
@@ -93,6 +109,10 @@ export const StellaAnimation = React.forwardRef<
   const flashAnimRef = useRef<{ startMs: number; duration: number } | null>(
     null,
   );
+
+  useEffect(() => {
+    frameSkipRef.current = frameSkip;
+  }, [frameSkip]);
 
   useImperativeHandle(
     ref,
@@ -122,64 +142,53 @@ export const StellaAnimation = React.forwardRef<
     [initialBirthProgress],
   );
 
-  // Push fresh colors into the renderer whenever the theme changes without
-  // tearing down the GL context.
   useEffect(() => {
     rendererRef.current?.setColors(colorsToFloat(colors));
   }, [colors]);
 
-  // Pause/resume the rAF loop in response to the `paused` prop.
   useEffect(() => {
     pausedRef.current = paused;
     if (paused) {
-      if (rafRef.current !== undefined) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = undefined;
-      }
       lastFrameMsRef.current = 0;
-      return;
-    }
-    if (rafRef.current === undefined && animateRef.current) {
-      rafRef.current = requestAnimationFrame(animateRef.current);
     }
   }, [paused]);
 
-  const gridW = Math.max(6, Math.round(columns));
-  const gridH = Math.max(4, Math.round(rows));
+  const { shaderGridW, shaderGridH } = layout;
 
   const onContextCreate = useCallback(
     (gl: ExpoWebGLRenderingContext) => {
       const bufferW = gl.drawingBufferWidth;
       const bufferH = gl.drawingBufferHeight;
-      // Each grid cell maps 1:1 to a glyph atlas slot on screen, so the
-      // atlas glyph size = device pixels per grid cell. Floor to integers
-      // and clamp so a degenerate buffer size still produces a readable
-      // atlas (dot radius needs ~3px to be visible).
-      const glyphWidth = Math.max(4, Math.floor(bufferW / gridW));
-      const glyphHeight = Math.max(4, Math.floor(bufferH / gridH));
+      const glyphWidth = Math.max(4, Math.floor(bufferW / shaderGridW));
+      const glyphHeight = Math.max(4, Math.floor(bufferH / shaderGridH));
 
       const atlas = buildGlyphAtlas(glyphWidth, glyphHeight);
       const renderer = initRenderer(
         gl,
         atlas,
-        gridW,
-        gridH,
+        shaderGridW,
+        shaderGridH,
         colorsToFloat(colorsRef.current),
         birthRef.current,
         flashRef.current,
       );
       if (!renderer) return;
       rendererRef.current = renderer;
+      frameCountRef.current = 0;
 
-      // Initial frame so a paused mount still shows the creature.
       renderer.render(timeRef.current, birthRef.current, flashRef.current);
 
-      const animate = () => {
+      const tick = () => {
         if (pausedRef.current) {
-          rafRef.current = undefined;
           lastFrameMsRef.current = 0;
           return;
         }
+
+        const skip = frameSkipRef.current;
+        if (skip > 0 && ++frameCountRef.current % (skip + 1) !== 0) {
+          return;
+        }
+
         const now = nowMs();
         const dt =
           lastFrameMsRef.current > 0
@@ -214,45 +223,44 @@ export const StellaAnimation = React.forwardRef<
         }
 
         renderer.render(timeRef.current, birthRef.current, flashRef.current);
-        rafRef.current = requestAnimationFrame(animate);
       };
 
-      animateRef.current = animate;
-      if (!pausedRef.current) {
-        rafRef.current = requestAnimationFrame(animate);
+      // Use setInterval rather than rAF: on React Native, rAF is coalesced
+      // into the JS scheduler and goes idle if no React commits are queued,
+      // which freezes expo-gl after the first frame even when JS is free.
+      if (tickRef.current !== null) {
+        clearInterval(tickRef.current);
       }
+      tickRef.current = setInterval(tick, 16);
     },
-    [gridW, gridH],
+    [shaderGridW, shaderGridH],
   );
 
-  // Clean up on unmount — GLView itself destroys the context, but we still
-  // cancel any pending frame and drop refs.
   useEffect(() => {
     return () => {
-      if (rafRef.current !== undefined) {
-        cancelAnimationFrame(rafRef.current);
+      if (tickRef.current !== null) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
       }
-      rafRef.current = undefined;
-      animateRef.current = null;
       const renderer = rendererRef.current;
       rendererRef.current = null;
       if (renderer) {
         try {
           renderer.destroy();
         } catch {
-          // GL context may already be gone — safe to ignore.
+          // GL context may already be gone.
         }
       }
     };
   }, []);
 
   const containerStyle = useMemo(
-    () => [styles.container, { width, height }],
-    [width, height],
+    () => [styles.container, layoutStyle],
+    [layoutStyle],
   );
 
   return (
-    <View style={containerStyle} pointerEvents="none">
+    <View style={containerStyle} pointerEvents="none" collapsable={false}>
       <GLView style={styles.gl} onContextCreate={onContextCreate} />
     </View>
   );
@@ -278,3 +286,14 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
 });
+
+export {
+  STELLA_EDGE_SCALE,
+  STELLA_GLYPH_PX,
+  WORKING_INDICATOR_DISPLAY_PT,
+  WORKING_INDICATOR_GRID,
+  WORKING_INDICATOR_RENDER_SCALE,
+  WORKING_INDICATOR_VIEWPORT_PT,
+  getStellaRenderLayout,
+  getWorkingIndicatorLayout,
+} from "./layout";
