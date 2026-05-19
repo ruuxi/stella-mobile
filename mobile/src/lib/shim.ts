@@ -458,34 +458,6 @@ export function generateShimScript(
 
   connectWs();
 
-  // ── Mobile sidebar drawer ────────────────────────────────────────
-  // Injects a hamburger toggle and backdrop into the desktop DOM so
-  // the CSS in mobile.css can drive the slide-over drawer.
-  document.addEventListener('DOMContentLoaded', function() {
-    if (document.documentElement.getAttribute('data-platform') !== 'mobile') return;
-
-    var toggle = document.createElement('button');
-    toggle.className = 'mobile-sidebar-toggle';
-    toggle.setAttribute('aria-label', 'Menu');
-    toggle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>';
-    toggle.addEventListener('click', function(e) {
-      e.stopPropagation();
-      document.documentElement.toggleAttribute('data-sidebar-open');
-    });
-    document.body.appendChild(toggle);
-
-    // Close sidebar when tapping outside it or selecting a nav item
-    document.addEventListener('click', function(e) {
-      if (!document.documentElement.hasAttribute('data-sidebar-open')) return;
-      if (e.target.closest('.mobile-sidebar-toggle')) return;
-      if (e.target.closest('.sidebar-nav-item') || !e.target.closest('.sidebar')) {
-        setTimeout(function() {
-          document.documentElement.removeAttribute('data-sidebar-open');
-        }, 100);
-      }
-    });
-  });
-
   console.log('[stella-bridge] Mobile bridge shim initialized');
 })();
 true;`;
