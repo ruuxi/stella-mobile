@@ -9,8 +9,8 @@ import {
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
-  getOrCreateMobileDeviceId,
   getPreferredPhoneAccess,
+  type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
@@ -109,7 +109,9 @@ function AuthenticatedComputerChat() {
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
+  const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(
+    null,
+  );
   const [paired, setPaired] = useState<boolean | null>(null);
   const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -127,11 +129,10 @@ function AuthenticatedComputerChat() {
   );
 
   useEffect(() => {
-    void getOrCreateMobileDeviceId().then(setMobileDeviceId);
-  }, []);
-
-  useEffect(() => {
-    void getPreferredPhoneAccess().then((access) => setPaired(Boolean(access)));
+    void getPreferredPhoneAccess().then((access) => {
+      setPhoneAccess(access);
+      setPaired(Boolean(access));
+    });
   }, []);
 
   useEffect(() => {
@@ -186,7 +187,7 @@ function AuthenticatedComputerChat() {
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending || !mobileDeviceId) return;
+    if (!text || sending || !phoneAccess) return;
 
     const userMsg: ChatMessage = { id: createId(), role: "user", text };
     const replyId = createId();
@@ -206,7 +207,12 @@ function AuthenticatedComputerChat() {
     const activity = startComputerLiveActivity();
 
     try {
-      const result = await sendChat({ message: text, mobileDeviceId });
+      const result = await sendChat({
+        message: text,
+        mobileDeviceId: phoneAccess.mobileDeviceId,
+        desktopDeviceId: phoneAccess.desktopDeviceId,
+        pairSecret: phoneAccess.pairSecret,
+      });
       if (result.kind === "sync" || result.kind === "unavailable") {
         setMessages((m) =>
           m.map((msg) =>
@@ -242,7 +248,7 @@ function AuthenticatedComputerChat() {
       activity.finish({ ok: false });
       setSending(false);
     }
-  }, [draft, mobileDeviceId, sendChat, sending, settlePendingReply]);
+  }, [draft, phoneAccess, sendChat, sending, settlePendingReply]);
 
   const dictationHeaders = useMemo(() => undefined, []);
 
