@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   ActivityIndicator,
   BackHandler,
@@ -15,6 +15,7 @@ import {
   View,
 } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { assert, assertObject } from "../../src/lib/assert";
 import { isGuest } from "../../src/lib/guest-mode";
 import { getConvexToken } from "../../src/lib/auth-token";
@@ -150,7 +151,11 @@ function readUnavailableState(
 
 function GuestDesktopScreen() {
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(
+    () => makeStyles(colors, insets.bottom),
+    [colors, insets.bottom],
+  );
   return (
     <View style={styles.centered}>
       <DesktopTabAnimation />
@@ -173,7 +178,12 @@ export default function StellaScreen() {
 
 function AuthenticatedStellaScreen() {
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(
+    () => makeStyles(colors, insets.bottom),
+    [colors, insets.bottom],
+  );
+  const router = useRouter();
   const webViewRef = useRef<WebView>(null);
   const preferredAccessRef = useRef<StoredPhoneAccess | null>(null);
   const screenStateRef = useRef<ScreenState["type"]>("loading");
@@ -186,6 +196,10 @@ function AuthenticatedStellaScreen() {
         ? (routeParams.code[0] ?? "")
         : "",
   );
+  // Pairing-only entries (deep link with a code, or no stored desktop)
+  // should not spin up the desktop tunnel/WebView. Only an explicit
+  // "View computer" navigation triggers the connection flow.
+  const isPairingOnly = routeCode.length > 0;
 
   const [screenState, setScreenStateRaw] = useState<ScreenState>({
     type: "loading",
@@ -374,7 +388,11 @@ function AuthenticatedStellaScreen() {
       try {
         const access = await completePhonePairing({ pairingCode: nextCode });
         updatePreferredAccess(access);
-        await refreshBridge(access);
+        notifySuccess();
+        // Pairing complete. Land the user on the Computer chat so they can
+        // start sending messages immediately; the WebView/tunnel is only
+        // spun up when they explicitly tap "View computer".
+        router.replace("/computer");
       } catch (error) {
         notifyError();
         setScreenState(
@@ -384,10 +402,18 @@ function AuthenticatedStellaScreen() {
         setIsPairing(false);
       }
     },
-    [pairingCode, refreshBridge, updatePreferredAccess],
+    [pairingCode, router, updatePreferredAccess],
   );
 
   useEffect(() => {
+    if (isPairingOnly) {
+      // Pairing deep link — show the pair sheet immediately and skip the
+      // bridge refresh entirely so the desktop tunnel/WebView only starts
+      // when the user explicitly opens View computer.
+      setScreenState(readUnavailableState("Pair your phone"));
+      setIsPairSheetOpen(true);
+      return;
+    }
     void refreshBridge();
     const interval = setInterval(() => {
       const access = preferredAccessRef.current;
@@ -407,7 +433,7 @@ function AuthenticatedStellaScreen() {
       clearInterval(interval);
       registerStellaRefresh(null);
     };
-  }, [refreshBridge]);
+  }, [isPairingOnly, refreshBridge, setScreenState]);
 
   useEffect(() => {
     if (!routeCode || attemptedRouteCodeRef.current === routeCode) {
@@ -706,7 +732,7 @@ function AuthenticatedStellaScreen() {
   );
 }
 
-const makeStyles = (colors: Colors) => StyleSheet.create({
+const makeStyles = (colors: Colors, insetBottom: number) => StyleSheet.create({
   screen: {
     flex: 1,
   },
@@ -726,6 +752,13 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     gap: 18,
     justifyContent: "center",
     paddingHorizontal: 24,
+    // The parent layout's top bar already clears the status bar, so the
+    // top padding only needs visual breathing room so the SVG + title
+    // don't hug the navigation chrome. The bottom edge does need the
+    // safe-area inset for the home indicator, plus a small buffer so
+    // the action button doesn't get clipped.
+    paddingTop: 32,
+    paddingBottom: insetBottom + 24,
   },
   sheetSafe: {
     backgroundColor: colors.background,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LayoutAnimation, StyleSheet, Text, View } from "react-native";
+import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import {
   loadComputerChatMessages,
@@ -205,6 +205,25 @@ function AuthenticatedComputerChat() {
           textAlign: "center",
           marginTop: 8,
         },
+        connectButton: {
+          alignItems: "center",
+          backgroundColor: colors.accent,
+          borderRadius: 22,
+          justifyContent: "center",
+          marginTop: 16,
+          minHeight: 44,
+          paddingHorizontal: 28,
+          paddingVertical: 12,
+        },
+        connectButtonPressed: {
+          opacity: 0.85,
+        },
+        connectButtonText: {
+          color: colors.accentForeground,
+          fontFamily: fonts.sans.semiBold,
+          fontSize: 15,
+          letterSpacing: -0.3,
+        },
       }),
     [colors],
   );
@@ -216,9 +235,19 @@ function AuthenticatedComputerChat() {
           <ConnectHeroAnimation />
           <Text style={styles.title}>Pair your phone first</Text>
           <Text style={styles.body}>
-            Open View computer from the + menu to pair this phone with your
-            Stella desktop. You only need to do it once.
+            Pair this phone with your Stella desktop so you can chat with it
+            from anywhere. You only need to do it once.
           </Text>
+          <Pressable
+            onPress={() => router.push("/stella")}
+            accessibilityLabel="Pair this phone"
+            style={({ pressed }) => [
+              styles.connectButton,
+              pressed && styles.connectButtonPressed,
+            ]}
+          >
+            <Text style={styles.connectButtonText}>Pair phone</Text>
+          </Pressable>
         </View>
       );
     }
@@ -232,7 +261,7 @@ function AuthenticatedComputerChat() {
         </Text>
       </View>
     );
-  }, [paired, styles]);
+  }, [paired, router, styles]);
 
   const canSubmit =
     draft.trim().length > 0 && !sending && paired === true;

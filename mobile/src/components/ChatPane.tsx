@@ -11,8 +11,10 @@ import {
   ActionSheetIOS,
   Alert,
   Animated,
+  Dimensions,
   Keyboard,
   LayoutAnimation,
+  Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
@@ -34,7 +36,7 @@ import { GlassView } from "expo-glass-effect";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
@@ -391,7 +393,7 @@ const openAssistantActions = (text: string) => {
         options: ["Copy", "Share\u2026", "Cancel"],
         cancelButtonIndex: 2,
       },
-      (index) => {
+      (index: number) => {
         if (index === 0) copyAssistantMessage(trimmed);
         else if (index === 1) shareAssistantMessage(trimmed);
       },
@@ -575,34 +577,173 @@ function ScrollToBottomFab({
 // "+" menu — single source of truth for composer attach actions across both
 // the chat and the computer chat. The chat has both Attach + View computer;
 // the computer chat skips Attach since it doesn't accept image input.
+//
+// The menu renders as a small popover anchored just above the `+` button
+// (drop-up, since the composer is at the bottom of the screen) rather than
+// a center-screen action sheet. This mirrors the desktop's `+` menu
+// behavior and feels more native for an inline composer affordance.
 // ---------------------------------------------------------------------------
 
 type PlusMenuOption = {
   id: string;
   label: string;
+  icon: IconName;
   onSelect: () => void;
 };
 
-const openPlusMenu = (options: PlusMenuOption[]) => {
-  if (options.length === 0) return;
-  if (Platform.OS === "ios") {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: [...options.map((o) => o.label), "Cancel"],
-        cancelButtonIndex: options.length,
-      },
-      (index) => {
-        const picked = options[index];
-        if (picked) picked.onSelect();
-      },
-    );
-    return;
+type AnchorRect = { x: number; y: number; width: number; height: number };
+
+const PLUS_MENU_GAP = 10;
+const PLUS_MENU_MIN_WIDTH = 200;
+const PLUS_MENU_EDGE_PADDING = 12;
+
+function PlusMenuPopover({
+  visible,
+  anchor,
+  options,
+  onDismiss,
+  colors,
+}: {
+  visible: boolean;
+  anchor: AnchorRect | null;
+  options: PlusMenuOption[];
+  onDismiss: () => void;
+  colors: Colors;
+}) {
+  const styles = useMemo(() => makePlusMenuStyles(colors), [colors]);
+  const [menuLayout, setMenuLayout] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!visible) {
+      setMenuLayout(null);
+    }
+  }, [visible]);
+
+  if (!visible || !anchor) {
+    return null;
   }
-  Alert.alert("Add", undefined, [
-    ...options.map((o) => ({ text: o.label, onPress: o.onSelect })),
-    { text: "Cancel", style: "cancel" as const },
-  ]);
-};
+
+  const screen = Dimensions.get("window");
+  const measured = menuLayout;
+  const desiredWidth = Math.max(PLUS_MENU_MIN_WIDTH, measured?.width ?? 0);
+  // Left-align with the anchor, clamped inside the screen so the bubble
+  // never spills past the edge of the device.
+  const left = Math.min(
+    Math.max(PLUS_MENU_EDGE_PADDING, anchor.x),
+    screen.width - desiredWidth - PLUS_MENU_EDGE_PADDING,
+  );
+  // Drop-up by default; fall back to drop-down if the menu wouldn't fit
+  // above the anchor.
+  const menuHeight = measured?.height ?? 0;
+  const dropUpTop = anchor.y - menuHeight - PLUS_MENU_GAP;
+  const top =
+    measured && dropUpTop < PLUS_MENU_EDGE_PADDING
+      ? anchor.y + anchor.height + PLUS_MENU_GAP
+      : dropUpTop;
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      onRequestClose={onDismiss}
+      statusBarTranslucent
+    >
+      <Pressable
+        style={styles.backdrop}
+        onPress={onDismiss}
+        accessibilityLabel="Dismiss menu"
+      >
+        <View
+          // Stop the backdrop's onPress from firing when the user taps
+          // inside the menu itself.
+          onStartShouldSetResponder={() => true}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            setMenuLayout({ width, height });
+          }}
+          style={[
+            styles.menu,
+            {
+              left,
+              minWidth: PLUS_MENU_MIN_WIDTH,
+              opacity: measured ? 1 : 0,
+              top: measured ? top : anchor.y - PLUS_MENU_GAP,
+            },
+          ]}
+        >
+          {options.map((option, index) => (
+            <Pressable
+              key={option.id}
+              accessibilityLabel={option.label}
+              onPress={() => {
+                onDismiss();
+                option.onSelect();
+              }}
+              style={({ pressed }) => [
+                styles.menuItem,
+                index === 0 && styles.menuItemFirst,
+                index === options.length - 1 && styles.menuItemLast,
+                pressed && styles.menuItemPressed,
+              ]}
+            >
+              <Icon
+                name={option.icon}
+                size={16}
+                color={colors.text}
+                style={styles.menuItemIcon}
+              />
+              <Text style={styles.menuItemLabel}>{option.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const makePlusMenuStyles = (colors: Colors) =>
+  StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      // No visible scrim — the menu is a lightweight popover, not a
+      // modal dialog. The Pressable still catches outside taps.
+      backgroundColor: "transparent",
+    },
+    menu: {
+      backgroundColor: colors.surface,
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      paddingVertical: 6,
+      position: "absolute",
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.18,
+      shadowRadius: 24,
+      elevation: 12,
+    },
+    menuItem: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+    },
+    menuItemFirst: {},
+    menuItemLast: {},
+    menuItemPressed: { backgroundColor: fadeHex(colors.text, 0.06) },
+    menuItemIcon: { width: 20 },
+    menuItemLabel: {
+      color: colors.text,
+      fontFamily: fonts.sans.medium,
+      fontSize: 15,
+      letterSpacing: -0.2,
+    },
+  });
 
 // ---------------------------------------------------------------------------
 // ChatPane — full chat screen surface (list + composer + scroll model).
@@ -800,30 +941,49 @@ export function ChatPane({
     [attachments, onChangeAttachments],
   );
 
-  const onPressPlus = useCallback(() => {
-    const options: PlusMenuOption[] = [];
+  const plusAnchorRef = useRef<View>(null);
+  const [plusMenuAnchor, setPlusMenuAnchor] = useState<AnchorRect | null>(null);
+
+  const plusMenuOptions = useMemo<PlusMenuOption[]>(() => {
+    const out: PlusMenuOption[] = [];
     if (enableAttachments) {
-      options.push({
+      out.push({
         id: "attach-photo",
         label: "Attach a photo",
+        icon: "image",
         onSelect: () => void pickImage(),
       });
     }
     if (onViewComputer) {
-      options.push({
+      out.push({
         id: "view-computer",
         label: "View computer",
+        icon: "monitor",
         onSelect: onViewComputer,
       });
     }
-    if (options.length === 0) return;
-    if (options.length === 1 && options[0].id === "attach-photo") {
+    return out;
+  }, [enableAttachments, onViewComputer, pickImage]);
+
+  const onPressPlus = useCallback(() => {
+    if (plusMenuOptions.length === 0) return;
+    if (
+      plusMenuOptions.length === 1 &&
+      plusMenuOptions[0].id === "attach-photo"
+    ) {
       // Single-action: fall straight through so the menu doesn't add friction.
       void pickImage();
       return;
     }
-    openPlusMenu(options);
-  }, [enableAttachments, onViewComputer, pickImage]);
+    const anchor = plusAnchorRef.current;
+    if (!anchor) return;
+    Keyboard.dismiss();
+    anchor.measureInWindow((x, y, width, height) => {
+      setPlusMenuAnchor({ x, y, width, height });
+    });
+  }, [pickImage, plusMenuOptions]);
+
+  const dismissPlusMenu = useCallback(() => setPlusMenuAnchor(null), []);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
   const renderItem = useCallback(
@@ -862,14 +1022,21 @@ export function ChatPane({
   const hasPlusMenu = enableAttachments || Boolean(onViewComputer);
 
   const plusButton = hasPlusMenu ? (
-    <Pressable
-      style={styles.addButton}
-      hitSlop={4}
-      accessibilityLabel="Open add menu"
-      onPress={onPressPlus}
-    >
-      <Icon name="plus" size={16} color={colors.textMuted} weight="semibold" />
-    </Pressable>
+    <View ref={plusAnchorRef} collapsable={false}>
+      <Pressable
+        style={styles.addButton}
+        hitSlop={4}
+        accessibilityLabel="Open add menu"
+        onPress={onPressPlus}
+      >
+        <Icon
+          name="plus"
+          size={16}
+          color={colors.textMuted}
+          weight="semibold"
+        />
+      </Pressable>
+    </View>
   ) : null;
 
   const showAttachmentStrip =
@@ -1077,6 +1244,13 @@ export function ChatPane({
           )}
         </GlassView>
       </View>
+      <PlusMenuPopover
+        visible={Boolean(plusMenuAnchor) && plusMenuOptions.length > 0}
+        anchor={plusMenuAnchor}
+        options={plusMenuOptions}
+        onDismiss={dismissPlusMenu}
+        colors={colors}
+      />
     </View>
   );
 }
