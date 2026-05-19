@@ -1,10 +1,13 @@
+const cleanUrl = (value: string | undefined): string =>
+  (value ?? "").trim().replace(/\/+$/, "");
+
 const deriveConvexSiteUrl = () => {
-  const explicit = process.env.EXPO_PUBLIC_CONVEX_SITE_URL?.trim();
+  const explicit = cleanUrl(process.env.EXPO_PUBLIC_CONVEX_SITE_URL);
   if (explicit) {
     return explicit;
   }
 
-  const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL?.trim();
+  const convexUrl = cleanUrl(process.env.EXPO_PUBLIC_CONVEX_URL);
   if (!convexUrl) {
     return "";
   }
@@ -22,9 +25,10 @@ const deriveConvexSiteUrl = () => {
 
 export const env = {
   convexSiteUrl: deriveConvexSiteUrl(),
-  convexUrl: process.env.EXPO_PUBLIC_CONVEX_URL?.trim() ?? "",
-  siteUrl: process.env.EXPO_PUBLIC_SITE_URL?.trim() || "https://stella.sh",
-  mobileScheme: process.env.EXPO_PUBLIC_STELLA_MOBILE_SCHEME?.trim() || "stella-mobile",
+  convexUrl: cleanUrl(process.env.EXPO_PUBLIC_CONVEX_URL),
+  siteUrl: cleanUrl(process.env.EXPO_PUBLIC_SITE_URL) || "https://stella.sh",
+  mobileScheme:
+    process.env.EXPO_PUBLIC_STELLA_MOBILE_SCHEME?.trim() || "stella-mobile",
 };
 
 export const hasMobileConfig = Boolean(env.convexSiteUrl);
