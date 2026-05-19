@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
+import { LayoutAnimation, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import {
   loadComputerChatMessages,
@@ -8,13 +8,10 @@ import {
 import { postStream } from "../../src/lib/http";
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
-import { getOrCreateMobileDeviceId } from "../../src/lib/phone-access";
 import {
-  checkDesktopConnection,
-  connectToDesktop,
-  getDesktopConnectionState,
-  subscribeDesktopConnection,
-} from "../../src/lib/desktop-connection";
+  getOrCreateMobileDeviceId,
+  getPreferredPhoneAccess,
+} from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
 import { startComputerLiveActivity } from "../../src/lib/live-activity";
@@ -100,22 +97,14 @@ function AuthenticatedComputerChat() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
-  const [desktopState, setDesktopState] = useState(() =>
-    getDesktopConnectionState(),
-  );
+  const [paired, setPaired] = useState<boolean | null>(null);
 
   useEffect(() => {
     void getOrCreateMobileDeviceId().then(setMobileDeviceId);
   }, []);
 
   useEffect(() => {
-    return subscribeDesktopConnection(setDesktopState);
-  }, []);
-
-  useEffect(() => {
-    void checkDesktopConnection();
-    const interval = setInterval(() => void checkDesktopConnection(), 15_000);
-    return () => clearInterval(interval);
+    void getPreferredPhoneAccess().then((access) => setPaired(Boolean(access)));
   }, []);
 
   useEffect(() => {
@@ -216,44 +205,19 @@ function AuthenticatedComputerChat() {
           textAlign: "center",
           marginTop: 8,
         },
-        connectButton: {
-          marginTop: 20,
-          paddingVertical: 10,
-          paddingHorizontal: 28,
-          borderRadius: 999,
-          backgroundColor: colors.accent,
-        },
-        connectButtonText: {
-          fontFamily: fonts.sans.medium,
-          fontSize: 15,
-          color: colors.accentForeground,
-          letterSpacing: -0.2,
-        },
       }),
     [colors],
   );
 
   const emptyContent = useMemo(() => {
-    if (desktopState === "connecting") {
+    if (paired === false) {
       return (
         <View style={styles.block}>
           <ConnectHeroAnimation />
-          <Text style={styles.title}>Connecting…</Text>
+          <Text style={styles.title}>Pair your phone first</Text>
           <Text style={styles.body}>
-            Looking for your computer. Make sure Stella is running on your
-            desktop.
-          </Text>
-        </View>
-      );
-    }
-    if (desktopState === "connected") {
-      return (
-        <View style={styles.block}>
-          <ConnectHeroAnimation />
-          <Text style={styles.title}>Your computer, at your fingertips</Text>
-          <Text style={styles.body}>
-            Ask Stella to do things on your computer — browse the web, manage
-            files, run tasks, and more.
+            Open View computer from the + menu to pair this phone with your
+            Stella desktop. You only need to do it once.
           </Text>
         </View>
       );
@@ -266,18 +230,12 @@ function AuthenticatedComputerChat() {
           Ask Stella to do things on your computer — browse the web, manage
           files, run tasks, and more.
         </Text>
-        <Pressable
-          style={styles.connectButton}
-          onPress={() => void connectToDesktop()}
-        >
-          <Text style={styles.connectButtonText}>Connect</Text>
-        </Pressable>
       </View>
     );
-  }, [desktopState, styles]);
+  }, [paired, styles]);
 
   const canSubmit =
-    draft.trim().length > 0 && !sending && desktopState === "connected";
+    draft.trim().length > 0 && !sending && paired === true;
 
   return (
     <ChatPane
@@ -289,11 +247,11 @@ function AuthenticatedComputerChat() {
       canSubmit={canSubmit}
       onSubmit={() => void send()}
       placeholder={
-        desktopState === "connected"
-          ? "Ask Stella to do something"
-          : "Connect to your computer first"
+        paired === false
+          ? "Pair your phone to message your computer"
+          : "Ask Stella to do something"
       }
-      composerEnabled={desktopState === "connected"}
+      composerEnabled={paired !== false}
       enableAttachments={false}
       onViewComputer={() => router.push("/stella")}
       dictationAnonymous={false}
