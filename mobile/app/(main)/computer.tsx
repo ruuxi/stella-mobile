@@ -249,6 +249,12 @@ function AuthenticatedComputerChat() {
   const styles = useMemo(
     () =>
       StyleSheet.create({
+        unpairedSurface: {
+          alignItems: "center",
+          flex: 1,
+          justifyContent: "center",
+          paddingHorizontal: 24,
+        },
         block: {
           alignItems: "center",
           gap: 8,
@@ -294,9 +300,27 @@ function AuthenticatedComputerChat() {
     [colors],
   );
 
-  const emptyContent = useMemo(() => {
-    if (paired === false) {
-      return (
+  const emptyContent = useMemo(
+    () => (
+      <View style={styles.block}>
+        <ConnectHeroAnimation />
+        <Text style={styles.title}>Your computer, at your fingertips</Text>
+        <Text style={styles.body}>
+          Ask Stella to do things on your computer — browse the web, manage
+          files, run tasks, and more.
+        </Text>
+      </View>
+    ),
+    [styles],
+  );
+
+  // Unpaired: take over the entire surface with the pair CTA. We
+  // deliberately do not render `ChatPane` here — `loadComputerChatMessages`
+  // can rehydrate prior conversations from AsyncStorage, and we don't
+  // want a stale chat hiding the connect surface.
+  if (paired === false) {
+    return (
+      <View style={styles.unpairedSurface}>
         <View style={styles.block}>
           <ConnectHeroAnimation />
           <Text style={styles.title}>Pair your phone first</Text>
@@ -315,22 +339,11 @@ function AuthenticatedComputerChat() {
             <Text style={styles.connectButtonText}>Pair phone</Text>
           </Pressable>
         </View>
-      );
-    }
-    return (
-      <View style={styles.block}>
-        <ConnectHeroAnimation />
-        <Text style={styles.title}>Your computer, at your fingertips</Text>
-        <Text style={styles.body}>
-          Ask Stella to do things on your computer — browse the web, manage
-          files, run tasks, and more.
-        </Text>
       </View>
     );
-  }, [paired, router, styles]);
+  }
 
-  const canSubmit =
-    draft.trim().length > 0 && !sending && paired === true;
+  const canSubmit = draft.trim().length > 0 && !sending && paired === true;
 
   return (
     <ChatPane
@@ -341,12 +354,8 @@ function AuthenticatedComputerChat() {
       onChangeDraft={setDraft}
       canSubmit={canSubmit}
       onSubmit={() => void send()}
-      placeholder={
-        paired === false
-          ? "Pair your phone to message your computer"
-          : "Ask Stella to do something"
-      }
-      composerEnabled={paired !== false}
+      placeholder="Ask Stella to do something"
+      composerEnabled
       enableAttachments={false}
       onViewComputer={() => router.push("/stella")}
       dictationAnonymous={false}
