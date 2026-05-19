@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { env } from "../config/env";
+import { getJson } from "./http";
 
 export const STELLA_DEFAULT_MODEL = "stella/default";
 const SELECTED_MODEL_KEY = "stella-mobile.selected-stella-model";
@@ -80,10 +80,12 @@ export async function saveSelectedStellaModel(modelId: string) {
 }
 
 export async function fetchStellaModels(): Promise<StellaMobileModel[]> {
-  if (!env.convexSiteUrl) return FALLBACK_MODELS;
-  const response = await fetch(`${env.convexSiteUrl}/api/stella/models`);
-  if (!response.ok) return FALLBACK_MODELS;
-  const parsed = (await response.json()) as ModelsResponse;
+  let parsed: ModelsResponse;
+  try {
+    parsed = (await getJson("/api/stella/models")) as ModelsResponse;
+  } catch {
+    return FALLBACK_MODELS;
+  }
   const models =
     parsed.data
       ?.filter((model) => model.provider === "stella")
