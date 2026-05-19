@@ -23,7 +23,13 @@ export type SendChatResult =
 type MobileSendChatRef = FunctionReference<
   "action",
   "public",
-  { message: string; mobileDeviceId: string },
+  {
+    message: string;
+    mobileDeviceId: string;
+    desktopDeviceId: string;
+    pairSecret: string;
+    model?: string;
+  },
   SendChatResult
 >;
 

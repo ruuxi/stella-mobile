@@ -11,9 +11,11 @@ import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
   getOrCreateMobileDeviceId,
   getPreferredPhoneAccess,
+  type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
+import { useStellaModelSelection } from "../../src/lib/model-selection";
 import {
   acknowledgeDesktopReplyRef,
   mobileSendChatRef,
@@ -109,7 +111,9 @@ function AuthenticatedComputerChat() {
   const [sending, setSending] = useState(false);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const [paired, setPaired] = useState<boolean | null>(null);
+  const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(null);
   const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
+  const modelSelection = useStellaModelSelection();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settledRequestIdsRef = useRef<Set<string>>(new Set());
 
@@ -129,7 +133,10 @@ function AuthenticatedComputerChat() {
   }, []);
 
   useEffect(() => {
-    void getPreferredPhoneAccess().then((access) => setPaired(Boolean(access)));
+    void getPreferredPhoneAccess().then((access) => {
+      setPhoneAccess(access);
+      setPaired(Boolean(access));
+    });
   }, []);
 
   useEffect(() => {
@@ -183,7 +190,7 @@ function AuthenticatedComputerChat() {
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending || !mobileDeviceId) return;
+    if (!text || sending || !mobileDeviceId || !phoneAccess) return;
 
     const userMsg: ChatMessage = { id: createId(), role: "user", text };
     const replyId = createId();
@@ -201,7 +208,13 @@ function AuthenticatedComputerChat() {
     ]);
 
     try {
-      const result = await sendChat({ message: text, mobileDeviceId });
+      const result = await sendChat({
+        message: text,
+        mobileDeviceId,
+        desktopDeviceId: phoneAccess.desktopDeviceId,
+        pairSecret: phoneAccess.pairSecret,
+        model: modelSelection.selectedModel,
+      });
       if (result.kind === "sync" || result.kind === "unavailable") {
         setMessages((m) =>
           m.map((msg) =>
@@ -234,7 +247,15 @@ function AuthenticatedComputerChat() {
       );
       setSending(false);
     }
-  }, [draft, mobileDeviceId, sendChat, sending, settlePendingReply]);
+  }, [
+    draft,
+    mobileDeviceId,
+    modelSelection.selectedModel,
+    phoneAccess,
+    sendChat,
+    sending,
+    settlePendingReply,
+  ]);
 
   const dictationHeaders = useMemo(() => undefined, []);
 
@@ -339,7 +360,8 @@ function AuthenticatedComputerChat() {
     draft.trim().length > 0 &&
     !sending &&
     paired === true &&
-    Boolean(mobileDeviceId);
+    Boolean(mobileDeviceId) &&
+    Boolean(phoneAccess);
 
   return (
     <ChatPane
@@ -354,6 +376,10 @@ function AuthenticatedComputerChat() {
       composerEnabled
       enableAttachments={false}
       onViewComputer={() => router.push("/stella")}
+      selectedModel={modelSelection.selectedModel}
+      selectedModelLabel={modelSelection.selectedModelLabel}
+      modelOptions={modelSelection.models}
+      onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
       dictationAnonymous={false}
       dictationHeaders={dictationHeaders}
     />

@@ -13,6 +13,7 @@ import { AiConsentModal } from "../../src/components/AiConsentModal";
 import { getOrCreateMobileDeviceId } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
+import { useStellaModelSelection } from "../../src/lib/model-selection";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
@@ -36,6 +37,7 @@ export default function ChatScreen() {
   const [showConsentModal, setShowConsentModal] = useState(false);
   const pendingSendRef = useRef<(() => void) | null>(null);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
+  const modelSelection = useStellaModelSelection();
 
   useEffect(() => {
     if (!guest) return;
@@ -156,7 +158,12 @@ export default function ChatScreen() {
     try {
       await streamFn(
         "/api/mobile/offline-chat/stream",
-        { message: text, history, images: imagesPayload },
+        {
+          message: text,
+          history,
+          images: imagesPayload,
+          model: modelSelection.selectedModel,
+        },
         onDelta,
         streamOptions,
       );
@@ -181,7 +188,7 @@ export default function ChatScreen() {
     } finally {
       setSending(false);
     }
-  }, [attachments, draft, guest, messages, sending]);
+  }, [attachments, draft, guest, messages, modelSelection.selectedModel, sending]);
 
   const onConsentAccept = useCallback(() => {
     void grantAiConsent().then(() => {
@@ -227,6 +234,10 @@ export default function ChatScreen() {
         attachments={attachments}
         onChangeAttachments={setAttachments}
         onViewComputer={() => router.push("/stella")}
+        selectedModel={modelSelection.selectedModel}
+        selectedModelLabel={modelSelection.selectedModelLabel}
+        modelOptions={modelSelection.models}
+        onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
         dictationAnonymous={guest}
         dictationHeaders={dictationHeaders}
       />

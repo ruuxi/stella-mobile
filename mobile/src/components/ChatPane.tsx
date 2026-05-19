@@ -41,6 +41,10 @@ import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
+import {
+  speakReply,
+  useReadAloudPreference,
+} from "../lib/read-aloud";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
@@ -774,9 +778,18 @@ type PlusMenuOption = {
   label: string;
   icon: IconName;
   onSelect: () => void;
+  disabled?: boolean;
+  selected?: boolean;
+  trailingLabel?: string;
 };
 
 type AnchorRect = { x: number; y: number; width: number; height: number };
+
+export type ChatPaneModelOption = {
+  id: string;
+  name: string;
+  allowedForAudience: boolean;
+};
 
 const PLUS_MENU_GAP = 10;
 const PLUS_MENU_MIN_WIDTH = 200;
@@ -864,6 +877,7 @@ function PlusMenuPopover({
             <Pressable
               key={option.id}
               accessibilityLabel={option.label}
+              disabled={option.disabled}
               onPress={() => {
                 onDismiss();
                 option.onSelect();
@@ -873,15 +887,36 @@ function PlusMenuPopover({
                 index === 0 && styles.menuItemFirst,
                 index === options.length - 1 && styles.menuItemLast,
                 pressed && styles.menuItemPressed,
+                option.disabled && styles.menuItemDisabled,
               ]}
             >
               <Icon
                 name={option.icon}
                 size={16}
-                color={colors.text}
+                color={option.disabled ? colors.textMuted : colors.text}
                 style={styles.menuItemIcon}
               />
-              <Text style={styles.menuItemLabel}>{option.label}</Text>
+              <Text
+                style={[
+                  styles.menuItemLabel,
+                  option.disabled && styles.menuItemLabelMuted,
+                ]}
+                numberOfLines={1}
+              >
+                {option.label}
+              </Text>
+              {option.trailingLabel ? (
+                <Text style={styles.menuItemTrailing} numberOfLines={1}>
+                  {option.trailingLabel}
+                </Text>
+              ) : option.selected ? (
+                <Icon
+                  name="check"
+                  size={15}
+                  color={colors.accent}
+                  style={styles.menuItemCheck}
+                />
+              ) : null}
             </Pressable>
           ))}
         </View>
@@ -921,13 +956,25 @@ const makePlusMenuStyles = (colors: Colors) =>
     menuItemFirst: {},
     menuItemLast: {},
     menuItemPressed: { backgroundColor: fadeHex(colors.text, 0.06) },
+    menuItemDisabled: { opacity: 0.55 },
     menuItemIcon: { width: 20 },
     menuItemLabel: {
       color: colors.text,
+      flex: 1,
       fontFamily: fonts.sans.medium,
       fontSize: 15,
       letterSpacing: -0.2,
     },
+    menuItemLabelMuted: { color: colors.textMuted },
+    menuItemTrailing: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.medium,
+      fontSize: 13,
+      letterSpacing: -0.15,
+      marginLeft: 12,
+      maxWidth: 136,
+    },
+    menuItemCheck: { marginLeft: 12 },
   });
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1018,11 @@ export type ChatPaneProps = {
    */
   onViewComputer?: () => void;
 
+  selectedModel?: string;
+  selectedModelLabel?: string;
+  modelOptions?: ChatPaneModelOption[];
+  onSelectModel?: (modelId: string) => void;
+
   /** Headers passed to the dictation upload (e.g. mobile device id for guests). */
   dictationAnonymous: boolean;
   dictationHeaders?: Record<string, string>;
@@ -990,11 +1042,16 @@ export function ChatPane({
   attachments,
   onChangeAttachments,
   onViewComputer,
+  selectedModel,
+  selectedModelLabel,
+  modelOptions,
+  onSelectModel,
   dictationAnonymous,
   dictationHeaders,
 }: ChatPaneProps) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const readAloud = useReadAloudPreference();
 
   const inputRef = useRef<TextInput>(null);
   const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
@@ -1010,6 +1067,8 @@ export function ChatPane({
 
   const [unread, setUnread] = useState(false);
   const prevLenRef = useRef(0);
+  const wasStreamingRef = useRef(false);
+  const spokenAssistantIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const grew = messages.length > prevLenRef.current;
@@ -1024,6 +1083,24 @@ export function ChatPane({
   useEffect(() => {
     if (!scroll.awayFromBottom) setUnread(false);
   }, [scroll.awayFromBottom]);
+
+  useEffect(() => {
+    if (!readAloud.enabled) return;
+    if (streaming) {
+      wasStreamingRef.current = true;
+      return;
+    }
+    if (!wasStreamingRef.current) return;
+    wasStreamingRef.current = false;
+    const latestAssistant = [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant" && message.text.trim());
+    if (!latestAssistant || spokenAssistantIdsRef.current.has(latestAssistant.id)) {
+      return;
+    }
+    spokenAssistantIdsRef.current.add(latestAssistant.id);
+    void speakReply(latestAssistant.text);
+  }, [messages, readAloud.enabled, streaming]);
 
   const [expanded, setExpanded] = useState(false);
   const hasMountedRef = useRef(false);
@@ -1147,8 +1224,45 @@ export function ChatPane({
         onSelect: onViewComputer,
       });
     }
+    if (onSelectModel && selectedModelLabel && (modelOptions?.length ?? 0) > 0) {
+      out.push({
+        id: "model-current",
+        label: "Model",
+        icon: "cpu",
+        trailingLabel: selectedModelLabel,
+        disabled: true,
+        onSelect: () => {},
+      });
+      for (const model of modelOptions ?? []) {
+        out.push({
+          id: `model-${model.id}`,
+          label: model.name,
+          icon: selectedModel === model.id ? "check" : "cpu",
+          selected: selectedModel === model.id,
+          disabled: !model.allowedForAudience,
+          onSelect: () => {
+            if (model.allowedForAudience) onSelectModel(model.id);
+          },
+        });
+      }
+    }
+    out.push({
+      id: "read-aloud",
+      label: readAloud.enabled ? "Stop reading aloud" : "Read replies aloud",
+      icon: readAloud.enabled ? "volume-2" : "volume-x",
+      onSelect: () => void readAloud.setEnabled(!readAloud.enabled),
+    });
     return out;
-  }, [enableAttachments, onViewComputer, pickImage]);
+  }, [
+    enableAttachments,
+    modelOptions,
+    onSelectModel,
+    onViewComputer,
+    pickImage,
+    readAloud,
+    selectedModel,
+    selectedModelLabel,
+  ]);
 
   const onPressPlus = useCallback(() => {
     if (plusMenuOptions.length === 0) return;
@@ -1212,7 +1326,7 @@ export function ChatPane({
   const dictationBelow = isListening && hasText;
   const isExpandedComposed = expanded || dictationBelow;
 
-  const hasPlusMenu = enableAttachments || Boolean(onViewComputer);
+  const hasPlusMenu = composerEnabled;
 
   const plusButton = hasPlusMenu ? (
     <View ref={plusAnchorRef} collapsable={false}>

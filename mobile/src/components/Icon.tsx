@@ -20,6 +20,9 @@ export type IconName =
   | "image"
   | "message-square"
   | "monitor"
+  | "cpu"
+  | "volume-2"
+  | "volume-x"
   | "settings"
   | "user";
 
@@ -36,6 +39,9 @@ const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name
   "image": "image",
   "message-square": "message-square",
   "monitor": "monitor",
+  "cpu": "cpu",
+  "volume-2": "volume-2",
+  "volume-x": "volume-x",
   "settings": "settings",
   "user": "user",
 };
@@ -53,6 +59,9 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "image": "photo",
   "message-square": "message",
   "monitor": "desktopcomputer",
+  "cpu": "cpu",
+  "volume-2": "speaker.wave.2",
+  "volume-x": "speaker.slash",
   "settings": "gearshape",
   "user": "person.crop.circle",
 };
