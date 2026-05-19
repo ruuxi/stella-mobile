@@ -95,7 +95,8 @@ function AuthenticatedLayout() {
     }
 
     if (isGuest()) {
-      if (onIndex || onLogin) {
+      // Guests may open /login from Sign in buttons — don't bounce them back to chat.
+      if (onIndex) {
         router.replace("/chat");
       }
       return;
