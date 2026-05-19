@@ -433,6 +433,10 @@ export function generateShimScript(
     localChat: {
       getOrCreateDefaultConversationId: function() { return invoke('localChat:getOrCreateDefaultConversationId'); },
       listEvents: function(p) { return invoke('localChat:listEvents', p); },
+      listMessages: function(p) { return invoke('localChat:listMessages', p); },
+      listMessagesBefore: function(p) { return invoke('localChat:listMessagesBefore', p); },
+      listActivity: function(p) { return invoke('localChat:listActivity', p); },
+      listFiles: function(p) { return invoke('localChat:listFiles', p); },
       getEventCount: function(p) { return invoke('localChat:getEventCount', p); },
       appendEvent: function(p) { return invoke('localChat:appendEvent', p); },
       persistDiscoveryWelcome: function(p) { return invoke('localChat:persistDiscoveryWelcome', p); },
