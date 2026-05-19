@@ -68,10 +68,10 @@ if (
  * Content-height threshold for pill → expanded.
  * Desktop uses scrollHeight > 44 which includes padding.
  * RN onContentSizeChange reports raw text height (no padding).
- * fontSize 14 × lineHeight 1.5 ≈ 21 per line → two lines ≈ 42.
+ * fontSize 16 × lineHeight ~22 ≈ 22 per line → two lines ≈ 44.
  * Use a value just above two lines so single-line typing stays pill.
  */
-const EXPAND_THRESHOLD = 44;
+const EXPAND_THRESHOLD = 48;
 /** LayoutAnimation config matching the same 350ms critically-damped spring. */
 const LAYOUT_SPRING = {
   duration: 350,
@@ -713,7 +713,7 @@ function AnimatedSubmitButton({
       >
         <Icon
           name="arrow-up"
-          size={14}
+          size={15}
           color={colors.accentForeground}
           weight="heavy"
         />
@@ -781,6 +781,15 @@ type PlusMenuOption = {
   disabled?: boolean;
   selected?: boolean;
   trailingLabel?: string;
+  /** When set, tapping opens this list instead of calling `onSelect`. */
+  submenu?: PlusMenuOption[];
+  /** Header shown above a submenu (defaults to the parent row label). */
+  submenuTitle?: string;
+};
+
+type PlusMenuLevel = {
+  title: string;
+  options: PlusMenuOption[];
 };
 
 type AnchorRect = { x: number; y: number; width: number; height: number };
@@ -813,12 +822,53 @@ function PlusMenuPopover({
     width: number;
     height: number;
   } | null>(null);
+  const [submenuStack, setSubmenuStack] = useState<PlusMenuLevel[]>([]);
 
   useEffect(() => {
     if (!visible) {
       setMenuLayout(null);
+      setSubmenuStack([]);
     }
   }, [visible]);
+
+  const activeLevel = submenuStack[submenuStack.length - 1];
+  const visibleOptions = activeLevel?.options ?? options;
+  const submenuTitle = activeLevel?.title ?? null;
+
+  const handleRequestClose = useCallback(() => {
+    if (submenuStack.length > 0) {
+      setSubmenuStack((prev) => prev.slice(0, -1));
+      setMenuLayout(null);
+      return;
+    }
+    onDismiss();
+  }, [onDismiss, submenuStack.length]);
+
+  const goBack = useCallback(() => {
+    setSubmenuStack((prev) => prev.slice(0, -1));
+    setMenuLayout(null);
+  }, []);
+
+  const onSelectOption = useCallback(
+    (option: PlusMenuOption) => {
+      const submenu = option.submenu;
+      if (submenu && submenu.length > 0) {
+        setSubmenuStack((prev) => [
+          ...prev,
+          {
+            title: option.submenuTitle ?? option.label,
+            options: submenu,
+          },
+        ]);
+        setMenuLayout(null);
+        return;
+      }
+      setSubmenuStack([]);
+      onDismiss();
+      option.onSelect();
+    },
+    [onDismiss],
+  );
 
   if (!visible || !anchor) {
     return null;
@@ -847,12 +897,12 @@ function PlusMenuPopover({
       transparent
       visible={visible}
       animationType="fade"
-      onRequestClose={onDismiss}
+      onRequestClose={handleRequestClose}
       statusBarTranslucent
     >
       <Pressable
         style={styles.backdrop}
-        onPress={onDismiss}
+        onPress={handleRequestClose}
         accessibilityLabel="Dismiss menu"
       >
         <View
@@ -873,52 +923,83 @@ function PlusMenuPopover({
             },
           ]}
         >
-          {options.map((option, index) => (
+          {submenuTitle ? (
             <Pressable
-              key={option.id}
-              accessibilityLabel={option.label}
-              disabled={option.disabled}
-              onPress={() => {
-                onDismiss();
-                option.onSelect();
-              }}
+              accessibilityLabel="Back to menu"
+              onPress={goBack}
               style={({ pressed }) => [
                 styles.menuItem,
-                index === 0 && styles.menuItemFirst,
-                index === options.length - 1 && styles.menuItemLast,
+                styles.menuItemFirst,
+                styles.submenuHeader,
                 pressed && styles.menuItemPressed,
-                option.disabled && styles.menuItemDisabled,
               ]}
             >
               <Icon
-                name={option.icon}
+                name="chevron-left"
                 size={16}
-                color={option.disabled ? colors.textMuted : colors.text}
+                color={colors.textMuted}
                 style={styles.menuItemIcon}
               />
-              <Text
-                style={[
-                  styles.menuItemLabel,
-                  option.disabled && styles.menuItemLabelMuted,
-                ]}
-                numberOfLines={1}
-              >
-                {option.label}
+              <Text style={styles.submenuHeaderLabel} numberOfLines={1}>
+                {submenuTitle}
               </Text>
-              {option.trailingLabel ? (
-                <Text style={styles.menuItemTrailing} numberOfLines={1}>
-                  {option.trailingLabel}
-                </Text>
-              ) : option.selected ? (
-                <Icon
-                  name="check"
-                  size={15}
-                  color={colors.accent}
-                  style={styles.menuItemCheck}
-                />
-              ) : null}
             </Pressable>
-          ))}
+          ) : null}
+          {visibleOptions.map((option, index) => {
+            const isFirst = !submenuTitle && index === 0;
+            const isLast = index === visibleOptions.length - 1;
+            const hasSubmenu = Boolean(option.submenu?.length);
+            return (
+              <Pressable
+                key={option.id}
+                accessibilityLabel={option.label}
+                disabled={option.disabled}
+                onPress={() => onSelectOption(option)}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  isFirst && styles.menuItemFirst,
+                  isLast && styles.menuItemLast,
+                  pressed && styles.menuItemPressed,
+                  option.disabled && styles.menuItemDisabled,
+                ]}
+              >
+                <Icon
+                  name={option.icon}
+                  size={16}
+                  color={option.disabled ? colors.textMuted : colors.text}
+                  style={styles.menuItemIcon}
+                />
+                <Text
+                  style={[
+                    styles.menuItemLabel,
+                    option.disabled && styles.menuItemLabelMuted,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {option.label}
+                </Text>
+                {option.trailingLabel ? (
+                  <Text style={styles.menuItemTrailing} numberOfLines={1}>
+                    {option.trailingLabel}
+                  </Text>
+                ) : hasSubmenu ? (
+                  <Icon
+                    name="chevron-right"
+                    size={15}
+                    color={colors.textMuted}
+                    style={styles.menuItemCheck}
+                  />
+                ) : option.selected ? (
+                  <Icon
+                    name="check"
+                    size={15}
+                    color={colors.accent}
+                    style={styles.menuItemCheck}
+                  />
+                ) : null}
+              </Pressable>
+            );
+          })}
         </View>
       </Pressable>
     </Modal>
@@ -975,6 +1056,19 @@ const makePlusMenuStyles = (colors: Colors) =>
       maxWidth: 136,
     },
     menuItemCheck: { marginLeft: 12 },
+    submenuHeader: {
+      borderBottomColor: fadeHex(colors.border, 0.55),
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      marginBottom: 4,
+      paddingBottom: 10,
+    },
+    submenuHeaderLabel: {
+      color: colors.textMuted,
+      flex: 1,
+      fontFamily: fonts.sans.medium,
+      fontSize: 14,
+      letterSpacing: -0.15,
+    },
   });
 
 // ---------------------------------------------------------------------------
@@ -1226,25 +1320,22 @@ export function ChatPane({
     }
     if (onSelectModel && selectedModelLabel && (modelOptions?.length ?? 0) > 0) {
       out.push({
-        id: "model-current",
-        label: "Model",
+        id: "model-picker",
+        label: selectedModelLabel,
         icon: "cpu",
-        trailingLabel: selectedModelLabel,
-        disabled: true,
-        onSelect: () => {},
-      });
-      for (const model of modelOptions ?? []) {
-        out.push({
+        submenuTitle: "Model",
+        submenu: (modelOptions ?? []).map((model) => ({
           id: `model-${model.id}`,
           label: model.name,
-          icon: selectedModel === model.id ? "check" : "cpu",
+          icon: "cpu",
           selected: selectedModel === model.id,
           disabled: !model.allowedForAudience,
           onSelect: () => {
             if (model.allowedForAudience) onSelectModel(model.id);
           },
-        });
-      }
+        })),
+        onSelect: () => {},
+      });
     }
     out.push({
       id: "read-aloud",
@@ -1338,7 +1429,7 @@ export function ChatPane({
       >
         <Icon
           name="plus"
-          size={16}
+          size={17}
           color={colors.textMuted}
           weight="semibold"
         />
@@ -1469,7 +1560,7 @@ export function ChatPane({
                   >
                     <Icon
                       name={isListening ? "mic-off" : "mic"}
-                      size={16}
+                      size={17}
                       color={
                         isListening ? colors.accentForeground : colors.textMuted
                       }
@@ -1540,7 +1631,7 @@ export function ChatPane({
                 >
                   <Icon
                     name={isListening ? "mic-off" : "mic"}
-                    size={16}
+                    size={17}
                     color={
                       isListening ? colors.accentForeground : colors.textMuted
                     }
@@ -1706,9 +1797,9 @@ const makeStyles = (colors: Colors) =>
       alignItems: "center",
       flexDirection: "row",
       gap: 8,
-      minHeight: 46,
+      minHeight: 50,
       paddingHorizontal: 8,
-      paddingVertical: 7,
+      paddingVertical: 8,
     },
     formExpanded: { flexDirection: "column" },
 
@@ -1716,10 +1807,10 @@ const makeStyles = (colors: Colors) =>
       color: colors.text,
       flex: 1,
       fontFamily: fonts.sans.regular,
-      fontSize: 15,
+      fontSize: 16,
       letterSpacing: -0.2,
-      lineHeight: 21,
-      maxHeight: 28,
+      lineHeight: 22,
+      maxHeight: 30,
       paddingHorizontal: 4,
       paddingVertical: 0,
       ...(Platform.OS === "android"
@@ -1729,13 +1820,13 @@ const makeStyles = (colors: Colors) =>
     inputExpanded: {
       color: colors.text,
       fontFamily: fonts.sans.regular,
-      fontSize: 15,
+      fontSize: 16,
       letterSpacing: -0.2,
-      lineHeight: 22,
+      lineHeight: 24,
       maxHeight: 200,
-      minHeight: 36,
+      minHeight: 40,
       paddingHorizontal: 16,
-      paddingTop: 10,
+      paddingTop: 11,
       paddingBottom: 2,
     },
 
@@ -1764,26 +1855,26 @@ const makeStyles = (colors: Colors) =>
     addButton: {
       alignItems: "center",
       backgroundColor: fadeHex(colors.text, 0.06),
-      borderRadius: 15,
-      height: 30,
+      borderRadius: 16,
+      height: 32,
       justifyContent: "center",
-      width: 30,
+      width: 32,
     },
     submitButton: {
       alignItems: "center",
       backgroundColor: colors.accent,
-      borderRadius: 15,
-      height: 30,
+      borderRadius: 16,
+      height: 32,
       justifyContent: "center",
-      width: 30,
+      width: 32,
     },
     micButton: {
       alignItems: "center",
       backgroundColor: "transparent",
-      borderRadius: 15,
-      height: 30,
+      borderRadius: 16,
+      height: 32,
       justifyContent: "center",
-      width: 30,
+      width: 32,
     },
     micButtonActive: { backgroundColor: colors.accent },
   } as const);

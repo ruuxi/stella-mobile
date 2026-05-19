@@ -162,8 +162,9 @@ export default function MainLayout() {
     if (wide) closeSidebar();
   }, [wide]);
 
-  // -- Gesture: swipe right from left edge to open --
+  // -- Gesture: swipe right anywhere on the app to open --
   const openPan = Gesture.Pan()
+    .enabled(!sidebarOpen)
     .activeOffsetX(15)
     .failOffsetY([-20, 20])
     .onUpdate((e) => {
@@ -181,6 +182,7 @@ export default function MainLayout() {
   // -- Gesture: swipe left to close --
   const makeCloseGesture = () =>
     Gesture.Pan()
+      .enabled(sidebarOpen)
       .activeOffsetX(-15)
       .failOffsetY([-20, 20])
       .onUpdate((e) => {
@@ -198,8 +200,8 @@ export default function MainLayout() {
         }
       });
 
-  const closePanBackdrop = makeCloseGesture();
   const closePanDrawer = makeCloseGesture();
+  const drawerPan = sidebarOpen ? closePanDrawer : openPan;
 
   // -- Animated styles --
   // Sidebar sits underneath the foreground at rest. As the drawer opens we
@@ -294,7 +296,7 @@ export default function MainLayout() {
               together, with a soft left-edge shadow for depth, and a scrim
               painted on top so taps behind the controls dismiss the drawer
               without ever obscuring the sidebar. */}
-          <GestureDetector gesture={closePanDrawer}>
+          <GestureDetector gesture={drawerPan}>
             <Animated.View style={[styles.foregroundLayer, foregroundStyle]}>
               {gradient}
               <View style={[styles.topBar, { paddingTop: insets.top }]}>
@@ -330,14 +332,6 @@ export default function MainLayout() {
               </Animated.View>
             </Animated.View>
           </GestureDetector>
-
-          {/* Invisible left-edge zone for swipe-to-open. Above the
-              foreground so it can intercept the gesture before scrolls. */}
-          {!sidebarOpen && (
-            <GestureDetector gesture={openPan}>
-              <Animated.View style={styles.edgeZone} />
-            </GestureDetector>
-          )}
         </View>
       )}
     </SafeAreaView>
@@ -494,17 +488,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#000",
     zIndex: 3,
-  },
-
-  // Invisible left-edge swipe zone — above the foreground so wheels/scrolls
-  // don't eat the open gesture.
-  edgeZone: {
-    bottom: 0,
-    left: 0,
-    position: "absolute",
-    top: 0,
-    width: 25,
-    zIndex: 4,
   },
 
   // Shared content area

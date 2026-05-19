@@ -12,6 +12,8 @@ export type IconName =
   | "plus"
   | "x"
   | "chevron-down"
+  | "chevron-left"
+  | "chevron-right"
   | "arrow-up"
   | "arrow-up-right"
   | "mic"
@@ -31,6 +33,8 @@ const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name
   "plus": "plus",
   "x": "x",
   "chevron-down": "chevron-down",
+  "chevron-left": "chevron-left",
+  "chevron-right": "chevron-right",
   "arrow-up": "arrow-up",
   "arrow-up-right": "arrow-up-right",
   "mic": "mic",
@@ -51,6 +55,8 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "plus": "plus",
   "x": "xmark",
   "chevron-down": "chevron.down",
+  "chevron-left": "chevron.left",
+  "chevron-right": "chevron.right",
   "arrow-up": "arrow.up",
   "arrow-up-right": "arrow.up.right",
   "mic": "mic",
