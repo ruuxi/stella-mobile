@@ -8,6 +8,19 @@ import { getOrCreateMobileDeviceId } from "./phone-access";
 import { getNotificationsMuted } from "./notifications-prefs";
 
 const COMPUTER_REPLY_CATEGORY = "computer_reply";
+const AGENT_ACTIVITY_CATEGORY = "agent_activity";
+const NOTIFICATION_ACTIONS = [
+  {
+    identifier: "open",
+    buttonTitle: "Open",
+    options: { opensAppToForeground: true },
+  },
+  {
+    identifier: "dismiss",
+    buttonTitle: "Dismiss",
+    options: { opensAppToForeground: false, isDestructive: false },
+  },
+];
 
 Notifications.setNotificationHandler({
   handleNotification: async () => {
@@ -21,15 +34,22 @@ Notifications.setNotificationHandler({
         shouldSetBadge: false,
       };
     }
-    // Don't pop a banner over the app the user is currently looking at —
-    // they're already watching their reply stream in. Still log it to the
-    // notification list so they can find it later.
+    // Don't surface pushes over the app the user is currently looking at.
     const isForeground = AppState.currentState === "active";
+    if (isForeground) {
+      return {
+        shouldShowAlert: false,
+        shouldShowBanner: false,
+        shouldShowList: false,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      };
+    }
     return {
-      shouldShowAlert: !isForeground,
-      shouldShowBanner: !isForeground,
+      shouldShowAlert: true,
+      shouldShowBanner: true,
       shouldShowList: true,
-      shouldPlaySound: !isForeground,
+      shouldPlaySound: true,
       shouldSetBadge: false,
     };
   },
@@ -91,17 +111,15 @@ export async function registerForPushNotifications(): Promise<void> {
  */
 export async function installNotificationCategoriesAndListeners(): Promise<() => void> {
   try {
-    await Notifications.setNotificationCategoryAsync(COMPUTER_REPLY_CATEGORY, [
-      {
-        identifier: "open",
-        buttonTitle: "Open",
-        options: { opensAppToForeground: true },
-      },
-      {
-        identifier: "dismiss",
-        buttonTitle: "Dismiss",
-        options: { opensAppToForeground: false, isDestructive: false },
-      },
+    await Promise.all([
+      Notifications.setNotificationCategoryAsync(
+        COMPUTER_REPLY_CATEGORY,
+        NOTIFICATION_ACTIONS,
+      ),
+      Notifications.setNotificationCategoryAsync(
+        AGENT_ACTIVITY_CATEGORY,
+        NOTIFICATION_ACTIONS,
+      ),
     ]);
   } catch {
     // Best-effort; some platforms (Expo Go) just don't support categories.
@@ -117,7 +135,7 @@ export async function installNotificationCategoriesAndListeners(): Promise<() =>
       if (actionId === "dismiss") {
         return;
       }
-      if (data?.kind === "computer_reply") {
+      if (data?.kind === "computer_reply" || data?.kind === "agent_activity") {
         try {
           router.replace("/computer");
         } catch {

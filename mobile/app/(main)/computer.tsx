@@ -9,12 +9,11 @@ import {
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
+  getOrCreateMobileDeviceId,
   getPreferredPhoneAccess,
-  type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
-import { startComputerLiveActivity } from "../../src/lib/live-activity";
 import {
   acknowledgeDesktopReplyRef,
   mobileSendChatRef,
@@ -97,7 +96,6 @@ function GuestComputerChat() {
 type PendingReply = {
   requestId: string;
   replyId: string;
-  activity: ReturnType<typeof startComputerLiveActivity>;
 };
 
 const PENDING_REPLY_TIMEOUT_MS = 60_000;
@@ -109,9 +107,7 @@ function AuthenticatedComputerChat() {
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(
-    null,
-  );
+  const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const [paired, setPaired] = useState<boolean | null>(null);
   const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,10 +125,11 @@ function AuthenticatedComputerChat() {
   );
 
   useEffect(() => {
-    void getPreferredPhoneAccess().then((access) => {
-      setPhoneAccess(access);
-      setPaired(Boolean(access));
-    });
+    void getOrCreateMobileDeviceId().then(setMobileDeviceId);
+  }, []);
+
+  useEffect(() => {
+    void getPreferredPhoneAccess().then((access) => setPaired(Boolean(access)));
   }, []);
 
   useEffect(() => {
@@ -164,7 +161,6 @@ function AuthenticatedComputerChat() {
           msg.id === pending.replyId ? { ...msg, text } : msg,
         ),
       );
-      pending.activity.finish({ ok, preview: text });
       if (ok) notifySuccess();
       setSending(false);
       setPendingReply(null);
@@ -187,7 +183,7 @@ function AuthenticatedComputerChat() {
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending || !phoneAccess) return;
+    if (!text || sending || !mobileDeviceId) return;
 
     const userMsg: ChatMessage = { id: createId(), role: "user", text };
     const replyId = createId();
@@ -204,22 +200,14 @@ function AuthenticatedComputerChat() {
       { id: replyId, role: "assistant", text: "" },
     ]);
 
-    const activity = startComputerLiveActivity();
-
     try {
-      const result = await sendChat({
-        message: text,
-        mobileDeviceId: phoneAccess.mobileDeviceId,
-        desktopDeviceId: phoneAccess.desktopDeviceId,
-        pairSecret: phoneAccess.pairSecret,
-      });
+      const result = await sendChat({ message: text, mobileDeviceId });
       if (result.kind === "sync" || result.kind === "unavailable") {
         setMessages((m) =>
           m.map((msg) =>
             msg.id === replyId ? { ...msg, text: result.text } : msg,
           ),
         );
-        activity.finish({ ok: result.kind === "sync", preview: result.text });
         if (result.kind === "sync") notifySuccess();
         setSending(false);
         return;
@@ -228,7 +216,6 @@ function AuthenticatedComputerChat() {
       const pending: PendingReply = {
         requestId: result.requestId,
         replyId,
-        activity,
       };
       setPendingReply(pending);
       timeoutRef.current = setTimeout(() => {
@@ -245,10 +232,9 @@ function AuthenticatedComputerChat() {
           msg.id === replyId ? { ...msg, text: message } : msg,
         ),
       );
-      activity.finish({ ok: false });
       setSending(false);
     }
-  }, [draft, phoneAccess, sendChat, sending, settlePendingReply]);
+  }, [draft, mobileDeviceId, sendChat, sending, settlePendingReply]);
 
   const dictationHeaders = useMemo(() => undefined, []);
 
@@ -349,7 +335,11 @@ function AuthenticatedComputerChat() {
     );
   }
 
-  const canSubmit = draft.trim().length > 0 && !sending && paired === true;
+  const canSubmit =
+    draft.trim().length > 0 &&
+    !sending &&
+    paired === true &&
+    Boolean(mobileDeviceId);
 
   return (
     <ChatPane

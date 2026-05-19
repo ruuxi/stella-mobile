@@ -1,6 +1,12 @@
 import { Platform } from "react-native";
+import { requireOptionalNativeModule } from "expo-modules-core";
 import type { LiveActivity } from "expo-widgets";
-import type { ComputerActivityProps } from "../../widgets/ComputerActivity";
+
+type ComputerActivityProps = {
+  state: "working" | "done" | "error";
+  startedAtMs: number;
+  preview?: string;
+};
 
 type ActivityFactory = {
   start: (
@@ -17,9 +23,13 @@ const TRIM_PREVIEW = 140;
 const loadFactory = (): ActivityFactory | null => {
   if (cachedFactory) return cachedFactory;
   if (factoryFailed) return null;
-  // expo-widgets is iOS-only and the native module is unavailable in
-  // Expo Go; both cases must degrade gracefully.
+  // expo-widgets is iOS-only and ExpoWidgets is unavailable in Expo Go;
+  // degrade gracefully when the native module is missing.
   if (Platform.OS !== "ios") {
+    factoryFailed = true;
+    return null;
+  }
+  if (!requireOptionalNativeModule("ExpoWidgets")) {
     factoryFailed = true;
     return null;
   }

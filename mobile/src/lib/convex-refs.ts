@@ -20,17 +20,15 @@ export type SendChatResult =
   | { kind: "pending"; requestId: string }
   | { kind: "unavailable"; text: string };
 
-export const mobileSendChatRef = anyApi.mobile_chat.sendChat as FunctionReference<
+type MobileSendChatRef = FunctionReference<
   "action",
   "public",
-  {
-    message: string;
-    mobileDeviceId: string;
-    desktopDeviceId: string;
-    pairSecret: string;
-  },
+  { message: string; mobileDeviceId: string },
   SendChatResult
 >;
+
+export const mobileSendChatRef: MobileSendChatRef =
+  anyApi.mobile_chat.sendChat as unknown as MobileSendChatRef;
 
 export const watchDesktopReplyRef = anyApi.mobile_replies
   .watchDesktopReply as FunctionReference<
