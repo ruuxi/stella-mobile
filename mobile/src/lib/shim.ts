@@ -192,7 +192,10 @@ export function generateShimScript(
     window: {
       minimize: noop, maximize: noop, close: noop,
       isMaximized: function() { return resolved(false); },
+      isMiniAlwaysOnTop: function() { return resolved(false); },
+      setMiniAlwaysOnTop: noop,
       show: noop,
+      setNativeButtonsVisible: noop,
     },
 
     // ── Display ─────────────────────────────────────────────────────────
