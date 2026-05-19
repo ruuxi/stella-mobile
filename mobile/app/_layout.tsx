@@ -1,11 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Stack, usePathname, useRouter } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { loadAsync, useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
+import {
+  ConvexBetterAuthProvider,
+  type AuthClient,
+} from "@convex-dev/better-auth/react";
 import { authClient } from "../src/lib/auth-client";
+import { getConvexClient } from "../src/lib/convex";
 import { hasMobileConfig } from "../src/config/env";
 import {
   installNotificationCategoriesAndListeners,
@@ -115,7 +120,26 @@ function AppLayout() {
     return <RootStack />;
   }
 
-  return <AuthenticatedLayout />;
+  return <ConvexBoundLayout />;
+}
+
+function ConvexBoundLayout() {
+  // Lazily create the Convex client once, after we've confirmed the
+  // mobile config is present. `ConvexBetterAuthProvider` wires the
+  // client's `setAuth` to Better Auth's JWT fetcher so authenticated
+  // queries/mutations/actions work out of the box.
+  const convex = useMemo(() => getConvexClient(), []);
+  // `authClient` is a proxy whose generated type doesn't statically
+  // expose `convex.token()` — it's added at runtime by the
+  // `convexClient()` better-auth plugin. The provider just needs an
+  // object with `convex.token()`, which we already verified the proxy
+  // delegates correctly (see `src/lib/auth-token.ts`).
+  const providerAuthClient = authClient as unknown as AuthClient;
+  return (
+    <ConvexBetterAuthProvider client={convex} authClient={providerAuthClient}>
+      <AuthenticatedLayout />
+    </ConvexBetterAuthProvider>
+  );
 }
 
 export default function RootLayout() {

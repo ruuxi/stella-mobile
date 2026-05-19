@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
+import { useAction, useMutation, useQuery } from "convex/react";
 import {
   loadComputerChatMessages,
   saveComputerChatMessages,
 } from "../../src/lib/offline-chat-storage";
-import { postStream } from "../../src/lib/http";
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
@@ -15,6 +15,11 @@ import {
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
 import { startComputerLiveActivity } from "../../src/lib/live-activity";
+import {
+  acknowledgeDesktopReplyRef,
+  mobileSendChatRef,
+  watchDesktopReplyRef,
+} from "../../src/lib/convex-refs";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
@@ -89,6 +94,14 @@ function GuestComputerChat() {
   );
 }
 
+type PendingReply = {
+  requestId: string;
+  replyId: string;
+  activity: ReturnType<typeof startComputerLiveActivity>;
+};
+
+const PENDING_REPLY_TIMEOUT_MS = 60_000;
+
 function AuthenticatedComputerChat() {
   const colors = useColors();
   const router = useRouter();
@@ -98,6 +111,20 @@ function AuthenticatedComputerChat() {
   const [sending, setSending] = useState(false);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const [paired, setPaired] = useState<boolean | null>(null);
+  const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settledRequestIdsRef = useRef<Set<string>>(new Set());
+
+  const sendChat = useAction(mobileSendChatRef);
+  const acknowledgeReply = useMutation(acknowledgeDesktopReplyRef);
+
+  // Subscribe to the active request's reply row. Convex tears the
+  // subscription down automatically once we clear pendingReply (after
+  // either a successful render or a timeout fallback).
+  const replyRow = useQuery(
+    watchDesktopReplyRef,
+    pendingReply ? { requestId: pendingReply.requestId } : "skip",
+  );
 
   useEffect(() => {
     void getOrCreateMobileDeviceId().then(setMobileDeviceId);
@@ -119,11 +146,50 @@ function AuthenticatedComputerChat() {
     void saveComputerChatMessages(messages);
   }, [messages, storageLoaded]);
 
+  const clearPendingTimeout = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
+
+  const settlePendingReply = useCallback(
+    (pending: PendingReply, text: string, ok: boolean) => {
+      if (settledRequestIdsRef.current.has(pending.requestId)) return;
+      settledRequestIdsRef.current.add(pending.requestId);
+      clearPendingTimeout();
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === pending.replyId ? { ...msg, text } : msg,
+        ),
+      );
+      pending.activity.finish({ ok, preview: text });
+      if (ok) notifySuccess();
+      setSending(false);
+      setPendingReply(null);
+      // Best-effort: tell the backend to drop the relayed row now that
+      // the phone has it. Convex will TTL the row regardless, but
+      // acking keeps Convex storage at "seconds in the happy path".
+      void acknowledgeReply({ requestId: pending.requestId }).catch(() => {});
+    },
+    [acknowledgeReply, clearPendingTimeout],
+  );
+
+  // Reactive render: when the desktop publishes its reply, the
+  // subscription delivers it here.
+  useEffect(() => {
+    if (!pendingReply || !replyRow || !replyRow.text) return;
+    settlePendingReply(pendingReply, replyRow.text, true);
+  }, [pendingReply, replyRow, settlePendingReply]);
+
+  useEffect(() => clearPendingTimeout, [clearPendingTimeout]);
+
   const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || sending || !mobileDeviceId) return;
 
     const userMsg: ChatMessage = { id: createId(), role: "user", text };
+    const replyId = createId();
 
     setDraft("");
     setSending(true);
@@ -131,52 +197,52 @@ function AuthenticatedComputerChat() {
       duration: 350,
       update: { type: LayoutAnimation.Types.spring, springDamping: 1 },
     });
-    setMessages((m) => [...m, userMsg]);
-
-    const replyId = createId();
-    setMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
+    setMessages((m) => [
+      ...m,
+      userMsg,
+      { id: replyId, role: "assistant", text: "" },
+    ]);
 
     const activity = startComputerLiveActivity();
-    let accumulated = "";
 
     try {
-      await postStream(
-        "/api/mobile/chat",
-        { message: text, mobileDeviceId },
-        (delta) => {
-          accumulated += delta;
-          activity.update(accumulated);
-          setMessages((m) =>
-            m.map((msg) =>
-              msg.id === replyId
-                ? { ...msg, text: msg.text + delta }
-                : msg,
-            ),
-          );
-        },
-      );
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === replyId && !msg.text
-            ? { ...msg, text: "No reply came back. Try again." }
-            : msg,
-        ),
-      );
-      activity.finish({ ok: true, preview: accumulated });
-      notifySuccess();
+      const result = await sendChat({ message: text, mobileDeviceId });
+      if (result.kind === "sync" || result.kind === "unavailable") {
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId ? { ...msg, text: result.text } : msg,
+          ),
+        );
+        activity.finish({ ok: result.kind === "sync", preview: result.text });
+        if (result.kind === "sync") notifySuccess();
+        setSending(false);
+        return;
+      }
+
+      const pending: PendingReply = {
+        requestId: result.requestId,
+        replyId,
+        activity,
+      };
+      setPendingReply(pending);
+      timeoutRef.current = setTimeout(() => {
+        settlePendingReply(
+          pending,
+          "Stella didn\u2019t reply in time. Try again in a moment.",
+          false,
+        );
+      }, PENDING_REPLY_TIMEOUT_MS);
     } catch (e) {
+      const message = userFacingError(e);
       setMessages((m) =>
         m.map((msg) =>
-          msg.id === replyId
-            ? { ...msg, text: msg.text || userFacingError(e) }
-            : msg,
+          msg.id === replyId ? { ...msg, text: message } : msg,
         ),
       );
       activity.finish({ ok: false });
-    } finally {
       setSending(false);
     }
-  }, [draft, mobileDeviceId, sending]);
+  }, [draft, mobileDeviceId, sendChat, sending, settlePendingReply]);
 
   const dictationHeaders = useMemo(() => undefined, []);
 
