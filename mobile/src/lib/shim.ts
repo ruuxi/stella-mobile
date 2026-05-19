@@ -303,7 +303,19 @@ export function generateShimScript(
       startPhoneAccessSession: function() { return invoke('phoneAccess:startSession'); },
       stopPhoneAccessSession: function() { return invoke('phoneAccess:stopSession'); },
       configurePiRuntime: function(c) { return invoke('host:configurePiRuntime', c); },
-      setAuthState: function() { return resolved(); },
+      setAuthState: function(payload) {
+        return invoke('auth:setState', payload);
+      },
+      getAuthSession: function() { return invoke('auth:getSession'); },
+      signInAnonymous: function() { return invoke('auth:signInAnonymous'); },
+      signOutAuth: function() { return invoke('auth:signOut'); },
+      getConvexAuthToken: function() { return invoke('auth:getConvexToken'); },
+      completeRuntimeAuthRefresh: function(payload) {
+        return invoke('auth:runtimeRefreshComplete', payload);
+      },
+      onRuntimeAuthRefreshRequested: function(cb) {
+        return subscribe('auth:runtimeRefreshRequested', cb);
+      },
       setCloudSyncEnabled: function() { return resolved(); },
       onAuthCallback: noopSub,
       openFullDiskAccess: noop,

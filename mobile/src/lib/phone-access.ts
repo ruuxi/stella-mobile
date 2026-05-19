@@ -130,11 +130,15 @@ function readDesktopBridgeStatus(value: unknown): DesktopBridgeStatus {
     assert(typeof item === "string", "Desktop bridge URL must be a string.");
   }
   assert(
-    value.platform === undefined || typeof value.platform === "string",
+    value.platform === undefined ||
+      value.platform === null ||
+      typeof value.platform === "string",
     "Desktop bridge platform must be a string.",
   );
   assert(
-    value.updatedAt === undefined || typeof value.updatedAt === "number",
+    value.updatedAt === undefined ||
+      value.updatedAt === null ||
+      typeof value.updatedAt === "number",
     "Desktop bridge updatedAt must be a number.",
   );
   return {
