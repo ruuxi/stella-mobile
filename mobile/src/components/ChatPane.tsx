@@ -11,7 +11,6 @@ import {
   ActionSheetIOS,
   Alert,
   Animated,
-  Easing,
   Keyboard,
   LayoutAnimation,
   NativeScrollEvent,
@@ -99,6 +98,59 @@ const TAIL_SPACER_PX = 180;
 
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
+
+// ---------------------------------------------------------------------------
+// Keyboard inset — keeps the composer and message list above the OS keyboard.
+// ---------------------------------------------------------------------------
+
+function useKeyboardInset() {
+  const insets = useSafeAreaInsets();
+  const [height, setHeight] = useState(0);
+
+  useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const onShow = (
+      e: { endCoordinates: { height: number }; duration?: number },
+    ) => {
+      if (Platform.OS === "ios") {
+        LayoutAnimation.configureNext({
+          duration: e.duration ?? 250,
+          update: { type: LayoutAnimation.Types.keyboard },
+        });
+      }
+      setHeight(e.endCoordinates.height);
+    };
+
+    const onHide = (e: { duration?: number }) => {
+      if (Platform.OS === "ios") {
+        LayoutAnimation.configureNext({
+          duration: e.duration ?? 250,
+          update: { type: LayoutAnimation.Types.keyboard },
+        });
+      }
+      setHeight(0);
+    };
+
+    const showSub = Keyboard.addListener(showEvent, onShow);
+    const hideSub = Keyboard.addListener(hideEvent, onHide);
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const open = height > 0;
+  // When the keyboard is up it covers the home-indicator band; only reserve
+  // that inset on the composer while the keyboard is hidden.
+  const composerBottomPad = open ? 6 : 6 + insets.bottom;
+
+  return { height, open, composerBottomPad };
+}
 
 // ---------------------------------------------------------------------------
 // Scroll model — mirrors desktop chat scroll behavior.
@@ -619,49 +671,16 @@ export function ChatPane({
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const inputRef = useRef<TextInput>(null);
-  const insets = useSafeAreaInsets();
-
-  // `useAnimatedKeyboard` is deprecated in Reanimated 4 and observably broken
-  // on iOS 26 here (height stayed at 0, leaving the composer hidden behind
-  // the keyboard). Track keyboard height manually with the standard RN
-  // listeners and animate `paddingBottom` so the chat content compresses
-  // instead of getting covered.
-  const keyboardPad = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const animate = (toValue: number, duration: number) => {
-      Animated.timing(keyboardPad, {
-        toValue,
-        duration: Math.max(0, duration),
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
-    };
-
-    const showEvent =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-
-    const showSub = Keyboard.addListener(showEvent, (e) => {
-      const height = e?.endCoordinates?.height ?? 0;
-      // Subtract the safe-area inset: it already contributes its own padding
-      // below the composer, so we only need to add the *delta* to clear the
-      // keyboard.
-      const target = Math.max(0, height - insets.bottom);
-      animate(target, e?.duration ?? 250);
-    });
-    const hideSub = Keyboard.addListener(hideEvent, (e) => {
-      animate(0, e?.duration ?? 250);
-    });
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [insets.bottom, keyboardPad]);
+  const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
 
   const scroll = useChatScroll({ messages, streaming });
+
+  // After the viewport shrinks, keep the tail in view when the user was pinned.
+  useEffect(() => {
+    if (keyboardHeight <= 0 || scroll.awayFromBottom) return;
+    const id = requestAnimationFrame(() => scroll.scrollToBottom());
+    return () => cancelAnimationFrame(id);
+  }, [keyboardHeight, scroll.awayFromBottom, scroll.scrollToBottom]);
 
   const [unread, setUnread] = useState(false);
   const prevLenRef = useRef(0);
@@ -857,7 +876,7 @@ export function ChatPane({
     enableAttachments && (attachments?.length ?? 0) > 0;
 
   return (
-    <Animated.View style={[styles.screen, { paddingBottom: keyboardPad }]}>
+    <View style={[styles.screen, { paddingBottom: keyboardHeight }]}>
       <View style={styles.viewport}>
         {empty ? (
           <Pressable style={styles.emptyState} onPress={() => Keyboard.dismiss()}>
@@ -867,6 +886,7 @@ export function ChatPane({
           <>
             <FlashList
               ref={scroll.listRef}
+              style={styles.messageList}
               contentContainerStyle={styles.list}
               data={messages}
               renderItem={renderItem}
@@ -897,7 +917,7 @@ export function ChatPane({
       </View>
 
       <WorkingIndicator active={streaming} />
-      <View style={[styles.composerWrap, { paddingBottom: 6 + insets.bottom }]}>
+      <View style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}>
         {showAttachmentStrip && (
           <View style={styles.attachmentStrip}>
             {(attachments ?? []).map((asset) => (
@@ -1057,7 +1077,7 @@ export function ChatPane({
           )}
         </GlassView>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -1069,7 +1089,8 @@ const makeStyles = (colors: Colors) =>
   StyleSheet.create({
     screen: { flex: 1 },
 
-    viewport: { flex: 1, position: "relative" },
+    viewport: { flex: 1, minHeight: 0, position: "relative" },
+    messageList: { flex: 1 },
     scrollToBottomFab: {
       alignItems: "center",
       backgroundColor: colors.surface,

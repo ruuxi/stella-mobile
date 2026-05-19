@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LayoutAnimation, StyleSheet, Text } from "react-native";
+import { LayoutAnimation, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -180,6 +180,7 @@ export default function ChatScreen() {
   const styles = useMemo(
     () =>
       StyleSheet.create({
+        root: { flex: 1 },
         emptyText: {
           color: colors.textMuted,
           fontFamily: fonts.display.regularItalic,
@@ -192,7 +193,7 @@ export default function ChatScreen() {
   );
 
   return (
-    <>
+    <View style={styles.root}>
       <ChatPane
         messages={messages}
         streaming={sending}
@@ -214,6 +215,6 @@ export default function ChatScreen() {
         onAccept={onConsentAccept}
         onDecline={onConsentDecline}
       />
-    </>
+    </View>
   );
 }
