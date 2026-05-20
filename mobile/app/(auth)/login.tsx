@@ -39,6 +39,7 @@ type SubmitState =
   | { type: "idle" }
   | { type: "sending" }
   | { type: "google" }
+  | { type: "apple" }
   | { type: "sent"; requestId: string }
   | { type: "verifying" }
   | { type: "error"; message: string };
@@ -119,6 +120,32 @@ export default function LoginScreen() {
             result.error.message ||
             result.error.statusText ||
             "Google sign-in could not start.",
+        });
+        return;
+      }
+
+      router.replace("/chat");
+    } catch (error) {
+      setSubmitState({ type: "error", message: userFacingError(error) });
+    }
+  };
+
+  const signInWithApple = async () => {
+    setSubmitState({ type: "apple" });
+
+    try {
+      const result = (await authClient.signIn.social({
+        provider: "apple",
+        callbackURL: "/chat",
+      })) as SocialSignInResult | undefined;
+
+      if (result?.error) {
+        setSubmitState({
+          type: "error",
+          message:
+            result.error.message ||
+            result.error.statusText ||
+            "Apple sign-in could not start.",
         });
         return;
       }
@@ -228,24 +255,55 @@ export default function LoginScreen() {
             Your assistant,{"\n"}pocket-sized.
           </Text>
           <Text style={styles.body}>
-            Use Google or the email you use on your computer.
+            Use Apple, Google, or the email you use on your computer.
           </Text>
         </Pressable>
 
         <View style={styles.formArea}>
+          {Platform.OS === "ios" ? (
+            <Pressable
+              onPress={() => {
+                void signInWithApple();
+              }}
+              disabled={
+                submitState.type === "apple" ||
+                submitState.type === "google" ||
+                submitState.type === "sending" ||
+                submitState.type === "verifying"
+              }
+              accessibilityLabel="Continue with Apple"
+              style={({ pressed }) => [
+                styles.socialButton,
+                styles.appleButton,
+                pressed ? styles.socialButtonPressed : null,
+                submitState.type === "apple"
+                  ? styles.primaryButtonDisabled
+                  : null,
+              ]}
+            >
+              <AppleIcon />
+              <Text style={styles.appleButtonText}>
+                {submitState.type === "apple"
+                  ? "Opening Apple..."
+                  : "Continue with Apple"}
+              </Text>
+            </Pressable>
+          ) : null}
+
           <Pressable
             onPress={() => {
               void signInWithGoogle();
             }}
             disabled={
+              submitState.type === "apple" ||
               submitState.type === "google" ||
               submitState.type === "sending" ||
               submitState.type === "verifying"
             }
             accessibilityLabel="Continue with Google"
             style={({ pressed }) => [
-              styles.googleButton,
-              pressed ? styles.googleButtonPressed : null,
+              styles.socialButton,
+              pressed ? styles.socialButtonPressed : null,
               submitState.type === "google"
                 ? styles.primaryButtonDisabled
                 : null,
@@ -407,6 +465,17 @@ export default function LoginScreen() {
   );
 }
 
+function AppleIcon() {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 18 18">
+      <Path
+        fill="#FFFFFF"
+        d="M14.38 9.55c-.02-2.08 1.7-3.09 1.78-3.14-.97-1.42-2.48-1.61-3.01-1.63-1.27-.13-2.5.75-3.14.75-.65 0-1.64-.73-2.7-.71-1.38.02-2.67.82-3.38 2.08-1.46 2.53-.37 6.25 1.03 8.3.7 1 1.52 2.12 2.6 2.08 1.05-.04 1.44-.67 2.7-.67s1.62.67 2.72.65c1.13-.02 1.85-1.01 2.52-2.03.8-1.15 1.13-2.28 1.14-2.34-.03-.01-2.24-.86-2.26-3.34ZM12.32 3.43c.56-.7.94-1.65.84-2.61-.82.04-1.85.57-2.43 1.25-.52.61-.99 1.6-.87 2.52.93.07 1.88-.47 2.46-1.16Z"
+      />
+    </Svg>
+  );
+}
+
 function GoogleIcon() {
   return (
     <Svg width={18} height={18} viewBox="0 0 18 18">
@@ -465,7 +534,7 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     gap: 12,
     paddingBottom: 16,
   },
-  googleButton: {
+  socialButton: {
     alignItems: "center",
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -476,8 +545,18 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 16,
   },
-  googleButtonPressed: {
+  socialButtonPressed: {
     backgroundColor: fadeHex(colors.textMuted, 0.08),
+  },
+  appleButton: {
+    backgroundColor: "#000000",
+    borderColor: "#000000",
+  },
+  appleButtonText: {
+    color: "#FFFFFF",
+    fontFamily: fonts.sans.semiBold,
+    fontSize: 17,
+    letterSpacing: -0.3,
   },
   googleButtonText: {
     color: colors.text,
