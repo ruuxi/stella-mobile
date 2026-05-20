@@ -1154,6 +1154,35 @@ export function ChatPane({
     if (streaming) scroll.resetAssistantAutoScroll();
   }, [streaming, scroll.resetAssistantAutoScroll]);
 
+  // Anchor at the bottom on first load so we open into the latest message
+  // instead of the top of the history. Wait two frames so FlashList has
+  // laid out and the content size is real before jumping.
+  const didInitialScrollRef = useRef(false);
+  useEffect(() => {
+    if (didInitialScrollRef.current) return;
+    if (messages.length === 0) return;
+    didInitialScrollRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scroll.listRef.current?.scrollToEnd({ animated: false });
+      });
+    });
+  }, [messages.length, scroll.listRef]);
+
+  // When the keyboard rises while the user is at/near the bottom, pull the
+  // chat up so the keyboard doesn't cover the latest messages. If the user
+  // is reading further up, leave their scroll position alone.
+  const prevKeyboardHeightRef = useRef(0);
+  useEffect(() => {
+    const prev = prevKeyboardHeightRef.current;
+    prevKeyboardHeightRef.current = keyboardHeight;
+    if (keyboardHeight > prev && !scroll.awayFromBottom) {
+      requestAnimationFrame(() =>
+        scroll.listRef.current?.scrollToEnd({ animated: true }),
+      );
+    }
+  }, [keyboardHeight, scroll.awayFromBottom, scroll.listRef]);
+
   useEffect(() => {
     const grew = messages.length > prevLenRef.current;
     prevLenRef.current = messages.length;
@@ -1439,6 +1468,11 @@ export function ChatPane({
               showsVerticalScrollIndicator={false}
               keyboardDismissMode="on-drag"
               fadingEdgeLength={EDGE_FADE}
+              initialScrollIndex={
+                didInitialScrollRef.current
+                  ? undefined
+                  : Math.max(0, messages.length - 1)
+              }
             />
             <ScrollToBottomFab
               visible={scroll.awayFromBottom}
