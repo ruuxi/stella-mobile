@@ -14,6 +14,8 @@ import {
   View,
 } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import * as AppleAuthentication from "expo-apple-authentication";
+import * as Crypto from "expo-crypto";
 import { getSetCookie } from "@better-auth/expo/client";
 import { useRouter } from "expo-router";
 import Svg, { Path } from "react-native-svg";
@@ -134,6 +136,57 @@ export default function LoginScreen() {
     setSubmitState({ type: "apple" });
 
     try {
+      if (Platform.OS === "ios") {
+        // Apple echoes whatever string is passed as `nonce` into the
+        // identity token's `nonce` claim. better-auth verifies it with a
+        // literal string compare, so we must pass the SAME value to both
+        // sides. We use the SHA-256 hash of a random UUID so the raw value
+        // never traverses Apple's servers in the JWT.
+        const rawNonce = Crypto.randomUUID();
+        const hashedNonce = await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          rawNonce,
+        );
+
+        const credential = await AppleAuthentication.signInAsync({
+          requestedScopes: [
+            AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+            AppleAuthentication.AppleAuthenticationScope.EMAIL,
+          ],
+          nonce: hashedNonce,
+        });
+
+        if (!credential.identityToken) {
+          setSubmitState({
+            type: "error",
+            message: "Apple did not return an identity token.",
+          });
+          return;
+        }
+
+        const result = (await authClient.signIn.social({
+          provider: "apple",
+          idToken: {
+            token: credential.identityToken,
+            nonce: hashedNonce,
+          },
+        })) as SocialSignInResult | undefined;
+
+        if (result?.error) {
+          setSubmitState({
+            type: "error",
+            message:
+              result.error.message ||
+              result.error.statusText ||
+              "Apple sign-in could not complete.",
+          });
+          return;
+        }
+
+        router.replace("/chat");
+        return;
+      }
+
       const result = (await authClient.signIn.social({
         provider: "apple",
         callbackURL: "/chat",
@@ -152,6 +205,16 @@ export default function LoginScreen() {
 
       router.replace("/chat");
     } catch (error) {
+      // User cancels surface as ERR_REQUEST_CANCELED — return silently.
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: string }).code === "ERR_REQUEST_CANCELED"
+      ) {
+        setSubmitState({ type: "idle" });
+        return;
+      }
       setSubmitState({ type: "error", message: userFacingError(error) });
     }
   };

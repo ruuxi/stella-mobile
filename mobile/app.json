@@ -17,6 +17,7 @@
       "bundleIdentifier": "com.stella.mobile",
       "buildNumber": "10",
       "supportsTablet": true,
+      "usesAppleSignIn": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSupportsLiveActivities": true
@@ -53,6 +54,7 @@
         }
       ],
       "expo-secure-store",
+      "expo-apple-authentication",
       "expo-router",
       "expo-web-browser",
       [
