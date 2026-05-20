@@ -6,7 +6,7 @@ import {
   loadOfflineChatMessages,
   saveOfflineChatMessages,
 } from "../../src/lib/offline-chat-storage";
-import { postStream, postStreamAnonymous } from "../../src/lib/http";
+import { postStream, postStreamAnonymous, StreamAbortError } from "../../src/lib/http";
 import { hasAiConsent, grantAiConsent } from "../../src/lib/ai-consent";
 import { isGuest } from "../../src/lib/guest-mode";
 import { AiConsentModal } from "../../src/components/AiConsentModal";
@@ -21,6 +21,18 @@ import { ChatPane } from "../../src/components/ChatPane";
 
 const createId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * A locally-queued send. When the user submits while a reply is still
+ * streaming, we eagerly add the user bubble (marked `queued: true`) and park
+ * the dispatch payload here. As soon as the current stream finishes (or is
+ * stopped), we drain the next queued item and dispatch it for real.
+ */
+type QueuedSend = {
+  userMessageId: string;
+  text: string;
+  assets: ImagePicker.ImagePickerAsset[];
+};
 
 export default function ChatScreen() {
   const colors = useColors();
@@ -39,6 +51,14 @@ export default function ChatScreen() {
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const modelSelection = useStellaModelSelection();
 
+  // Local follow-up queue. Mirrors the desktop's `queuedUserMessages` model
+  // (see `desktop/src/app/chat/hooks/use-streaming-chat.ts`): user messages
+  // submitted mid-stream stack visually and are dispatched once the
+  // in-flight reply settles, instead of racing the streaming response.
+  const queueRef = useRef<QueuedSend[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+
   useEffect(() => {
     if (!guest) return;
     void getOrCreateMobileDeviceId().then(setMobileDeviceId);
@@ -56,139 +76,231 @@ export default function ChatScreen() {
     void saveOfflineChatMessages(messages);
   }, [messages, storageLoaded]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const dictationHeaders = useMemo(() => {
     if (!guest || !mobileDeviceId) return undefined;
     return { "X-Stella-Mobile-Device-Id": mobileDeviceId };
   }, [guest, mobileDeviceId]);
 
-  const canSubmit =
-    (draft.trim().length > 0 || attachments.length > 0) && !sending;
+  const canSubmit = draft.trim().length > 0 || attachments.length > 0;
 
-  const send = useCallback(async () => {
+  // ---------------------------------------------------------------------
+  // Stream dispatch. Runs the actual HTTP stream for a single queued item.
+  // The caller is responsible for adding the user message to `messages`
+  // first (with or without `queued: true`) — `dispatch` clears the
+  // queued flag, appends the assistant placeholder, and drains the next
+  // queued item from `queueRef` on completion.
+  // ---------------------------------------------------------------------
+  const dispatch = useCallback(
+    async (item: QueuedSend) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      // Promote the queued user bubble out of the dimmed state now that
+      // we're actually sending it.
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === item.userMessageId ? { ...msg, queued: false } : msg,
+        ),
+      );
+
+      // History excludes the current user message (we pass `text` separately)
+      // AND any other queued user messages still parked behind this one — the
+      // server should only see real, dispatched turns.
+      const queuedIds = new Set(queueRef.current.map((q) => q.userMessageId));
+      const history = messagesRef.current
+        .filter(
+          (m) =>
+            m.id !== item.userMessageId &&
+            !queuedIds.has(m.id) &&
+            !m.queued,
+        )
+        .map((m) => ({ role: m.role, text: m.text }));
+
+      const imagesPayload: { base64: string; mimeType: string }[] = [];
+      for (const a of item.assets) {
+        if (!a.base64) {
+          setMessages((m) => [
+            ...m,
+            {
+              id: createId(),
+              role: "assistant",
+              text: "Could not read that image. Try choosing it again.",
+            },
+          ]);
+          abortRef.current = null;
+          setSending(false);
+          void drainQueue();
+          return;
+        }
+        imagesPayload.push({
+          base64: a.base64,
+          mimeType: a.mimeType ?? "image/jpeg",
+        });
+      }
+
+      const replyId = createId();
+      setMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
+
+      // Coalesce token-by-token deltas into one render per ~33ms so the JS
+      // thread isn't pinned (which would starve rAF and freeze the WebGL
+      // working indicator above the composer).
+      let pendingDelta = "";
+      let flushScheduled = false;
+      const flush = () => {
+        flushScheduled = false;
+        if (!pendingDelta) return;
+        const chunk = pendingDelta;
+        pendingDelta = "";
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
+          ),
+        );
+      };
+      const scheduleFlush = () => {
+        if (flushScheduled) return;
+        flushScheduled = true;
+        setTimeout(flush, 33);
+      };
+      const onDelta = (delta: string) => {
+        pendingDelta += delta;
+        scheduleFlush();
+      };
+
+      const streamFn = guest ? postStreamAnonymous : postStream;
+      const streamOptions = {
+        signal: controller.signal,
+        ...(guest
+          ? {
+              headers: {
+                "X-Stella-Mobile-Device-Id": await getOrCreateMobileDeviceId(),
+              },
+            }
+          : {}),
+      };
+
+      try {
+        await streamFn(
+          "/api/mobile/offline-chat/stream",
+          {
+            message: item.text,
+            history,
+            images: imagesPayload,
+            model: modelSelection.selectedModel,
+          },
+          onDelta,
+          streamOptions,
+        );
+        flush();
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId && !msg.text
+              ? { ...msg, text: "No reply came back. Try again." }
+              : msg,
+          ),
+        );
+        notifySuccess();
+      } catch (e) {
+        flush();
+        if (e instanceof StreamAbortError) {
+          // Stop pressed — mark the reply row as stopped (keep any partial
+          // text the user had already seen) and let the queue drain be
+          // suppressed by the `stop()` handler that initiated the abort.
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === replyId
+                ? { ...msg, text: msg.text, stopped: true }
+                : msg,
+            ),
+          );
+        } else {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === replyId
+                ? { ...msg, text: msg.text || userFacingError(e) }
+                : msg,
+            ),
+          );
+        }
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null;
+        setSending(false);
+        // Drain the next queued send — but only if the user didn't press
+        // Stop (Stop clears `queueRef` synchronously before signalling).
+        void drainQueue();
+      }
+    },
+    [guest, modelSelection.selectedModel],
+  );
+
+  const drainQueue = useCallback(() => {
+    const next = queueRef.current.shift();
+    if (!next) return;
+    setSending(true);
+    void dispatch(next);
+  }, [dispatch]);
+
+  const enqueueOrDispatch = useCallback(
+    (text: string, assets: ImagePicker.ImagePickerAsset[]) => {
+      const userMessageId = createId();
+      const displayText = text || (assets.length ? "Photo" : "");
+      const thumbs = assets.slice(0, 3).map((a) => a.uri);
+      const userMsg: ChatMessage = {
+        id: userMessageId,
+        role: "user",
+        text: displayText,
+        hasImage: assets.length > 0,
+        ...(thumbs.length > 0 ? { thumbnailUris: thumbs } : {}),
+        ...(sending ? { queued: true } : {}),
+      };
+
+      LayoutAnimation.configureNext({
+        duration: 350,
+        update: { type: LayoutAnimation.Types.spring, springDamping: 1 },
+      });
+      setMessages((m) => [...m, userMsg]);
+
+      const item: QueuedSend = { userMessageId, text, assets };
+      if (sending) {
+        queueRef.current.push(item);
+      } else {
+        setSending(true);
+        void dispatch(item);
+      }
+    },
+    [dispatch, sending],
+  );
+
+  const send = useCallback(() => {
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || sending) return;
+    if (!text && attachments.length === 0) return;
 
     if (!hasAiConsent()) {
-      pendingSendRef.current = () => void send();
+      pendingSendRef.current = () => send();
       setShowConsentModal(true);
       return;
     }
 
-    const prior = messages;
-    const history = prior.map((m) => ({ role: m.role, text: m.text }));
     const assets = attachments.slice();
-
-    const displayText = text || (assets.length ? "Photo" : "");
-    const thumbs = assets.slice(0, 3).map((a) => a.uri);
-    const userMsg: ChatMessage = {
-      id: createId(),
-      role: "user",
-      text: displayText,
-      hasImage: assets.length > 0,
-      ...(thumbs.length > 0 ? { thumbnailUris: thumbs } : {}),
-    };
-
     setDraft("");
     setAttachments([]);
-    setSending(true);
+    enqueueOrDispatch(text, assets);
+  }, [attachments, draft, enqueueOrDispatch]);
 
-    LayoutAnimation.configureNext({
-      duration: 350,
-      update: { type: LayoutAnimation.Types.spring, springDamping: 1 },
-    });
-    setMessages((m) => [...m, userMsg]);
-
-    const imagesPayload: { base64: string; mimeType: string }[] = [];
-    for (const a of assets) {
-      if (!a.base64) {
-        setMessages((m) => [
-          ...m,
-          {
-            id: createId(),
-            role: "assistant",
-            text: "Could not read that image. Try choosing it again.",
-          },
-        ]);
-        setSending(false);
-        return;
-      }
-      imagesPayload.push({
-        base64: a.base64,
-        mimeType: a.mimeType ?? "image/jpeg",
-      });
+  const stop = useCallback(() => {
+    // Drop any queued items first so the in-flight finally-handler doesn't
+    // pick them up after the abort.
+    const cancelledIds = queueRef.current.map((q) => q.userMessageId);
+    queueRef.current = [];
+    if (cancelledIds.length > 0) {
+      setMessages((m) => m.filter((msg) => !cancelledIds.includes(msg.id)));
     }
-
-    const replyId = createId();
-    setMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
-
-    // Coalesce token-by-token deltas into one render per ~33ms so the JS
-    // thread isn't pinned (which would starve rAF and freeze the WebGL
-    // working indicator above the composer).
-    let pendingDelta = "";
-    let flushScheduled = false;
-    const flush = () => {
-      flushScheduled = false;
-      if (!pendingDelta) return;
-      const chunk = pendingDelta;
-      pendingDelta = "";
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
-        ),
-      );
-    };
-    const scheduleFlush = () => {
-      if (flushScheduled) return;
-      flushScheduled = true;
-      setTimeout(flush, 33);
-    };
-    const onDelta = (delta: string) => {
-      pendingDelta += delta;
-      scheduleFlush();
-    };
-
-    const streamFn = guest ? postStreamAnonymous : postStream;
-    const streamOptions = guest
-      ? {
-          headers: {
-            "X-Stella-Mobile-Device-Id": await getOrCreateMobileDeviceId(),
-          },
-        }
-      : undefined;
-    try {
-      await streamFn(
-        "/api/mobile/offline-chat/stream",
-        {
-          message: text,
-          history,
-          images: imagesPayload,
-          model: modelSelection.selectedModel,
-        },
-        onDelta,
-        streamOptions,
-      );
-      flush();
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === replyId && !msg.text
-            ? { ...msg, text: "No reply came back. Try again." }
-            : msg,
-        ),
-      );
-      notifySuccess();
-    } catch (e) {
-      flush();
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === replyId
-            ? { ...msg, text: msg.text || userFacingError(e) }
-            : msg,
-        ),
-      );
-    } finally {
-      setSending(false);
-    }
-  }, [attachments, draft, guest, messages, modelSelection.selectedModel, sending]);
+    abortRef.current?.abort();
+  }, []);
 
   const onConsentAccept = useCallback(() => {
     void grantAiConsent().then(() => {
@@ -228,7 +340,8 @@ export default function ChatScreen() {
         draft={draft}
         onChangeDraft={setDraft}
         canSubmit={canSubmit}
-        onSubmit={() => void send()}
+        onSubmit={send}
+        onStop={stop}
         placeholder="Message Stella"
         enableAttachments
         attachments={attachments}

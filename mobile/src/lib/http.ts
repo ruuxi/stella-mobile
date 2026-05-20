@@ -15,7 +15,16 @@ type JsonRequest =
 
 type StreamRequestOptions = {
   headers?: Record<string, string>;
+  /** Aborts the in-flight XHR. Callers receive an `AbortError` rejection. */
+  signal?: AbortSignal;
 };
+
+export class StreamAbortError extends Error {
+  constructor() {
+    super("aborted");
+    this.name = "AbortError";
+  }
+}
 
 const readErrorMessage = async (response: Response) => {
   const text = await response.text();
@@ -116,6 +125,26 @@ function executeStream(
     }
     xhr.responseType = "text";
 
+    const signal = options?.signal;
+    let aborted = false;
+    const onAbort = () => {
+      if (aborted) return;
+      aborted = true;
+      try {
+        xhr.abort();
+      } catch {
+        // ignore: xhr may already be done
+      }
+      reject(new StreamAbortError());
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort);
+    }
+
     let processed = 0;
 
     xhr.onprogress = () => {
@@ -142,6 +171,8 @@ function executeStream(
     };
 
     xhr.onload = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (aborted) return;
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve();
       } else {
@@ -155,8 +186,16 @@ function executeStream(
       }
     };
 
-    xhr.onerror = () => reject(new Error("Network error"));
-    xhr.ontimeout = () => reject(new Error("Request timed out"));
+    xhr.onerror = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (aborted) return;
+      reject(new Error("Network error"));
+    };
+    xhr.ontimeout = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      if (aborted) return;
+      reject(new Error("Request timed out"));
+    };
 
     xhr.send(JSON.stringify(body));
   });

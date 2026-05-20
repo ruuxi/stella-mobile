@@ -606,27 +606,37 @@ const ChatMessageRow = memo(function ChatMessageRow({
     const showText = item.text.trim().length > 0;
     return (
       <View style={styles.userRow}>
-        <View style={styles.userBubble}>
-          {showThumbs ? (
-            <View
-              style={[styles.userThumbStrip, showText && styles.userThumbsAbove]}
-            >
-              {thumbs.slice(0, 3).map((uri) => (
-                <Image
-                  key={uri}
-                  source={{ uri }}
-                  style={styles.userThumbImage}
-                  contentFit="cover"
-                />
-              ))}
-            </View>
-          ) : null}
-          {showText ? (
+        <View style={styles.userColumn}>
+          <View style={[styles.userBubble, item.queued && styles.userBubbleQueued]}>
+            {showThumbs ? (
+              <View
+                style={[styles.userThumbStrip, showText && styles.userThumbsAbove]}
+              >
+                {thumbs.slice(0, 3).map((uri) => (
+                  <Image
+                    key={uri}
+                    source={{ uri }}
+                    style={styles.userThumbImage}
+                    contentFit="cover"
+                  />
+                ))}
+              </View>
+            ) : null}
+            {showText ? (
+              <Text
+                style={styles.userText}
+                maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+              >
+                {item.text}
+              </Text>
+            ) : null}
+          </View>
+          {item.queued ? (
             <Text
-              style={styles.userText}
+              style={styles.queuedTag}
               maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
             >
-              {item.text}
+              Queued
             </Text>
           ) : null}
         </View>
@@ -652,6 +662,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
       >
         {item.text}
       </Text>
+      {item.stopped ? (
+        <Text
+          style={styles.stoppedTag}
+          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+        >
+          Stopped
+        </Text>
+      ) : null}
     </Pressable>
   );
 });
@@ -719,6 +737,39 @@ function AnimatedSubmitButton({
         />
       </Pressable>
     </Animated.View>
+  );
+}
+
+/**
+ * Square stop affordance shown in place of the submit button while a reply is
+ * streaming (chat) or pending (computer chat). Calling `onPress` cancels the
+ * in-flight reply AND drops any queued follow-ups — the user explicitly asked
+ * to halt the turn, so resuming requires re-sending.
+ */
+function StopButton({
+  onPress,
+  styles,
+  colors,
+}: {
+  onPress: () => void;
+  styles: ChatStyles;
+  colors: Colors;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityLabel="Stop reply"
+      style={styles.submitButton}
+      hitSlop={4}
+    >
+      <Icon
+        name="stop"
+        size={13}
+        color={colors.accentForeground}
+        weight="heavy"
+        filled
+      />
+    </Pressable>
   );
 }
 
@@ -1098,6 +1149,13 @@ export type ChatPaneProps = {
   canSubmit: boolean;
   /** Triggered by the send button or `return` key. */
   onSubmit: () => void;
+  /**
+   * Optional stop handler. When provided AND `streaming` is true, the send
+   * button is replaced by a stop button that calls this. Used to cancel the
+   * in-flight reply (and any queued follow-ups) for both the local chat
+   * stream and the computer-chat round trip.
+   */
+  onStop?: () => void;
 
   /** Show a small `+` menu entry for attaching photos. */
   enableAttachments: boolean;
@@ -1132,6 +1190,7 @@ export function ChatPane({
   placeholder,
   canSubmit,
   onSubmit,
+  onStop,
   enableAttachments,
   attachments,
   onChangeAttachments,
@@ -1567,13 +1626,23 @@ export function ChatPane({
                       filled={isListening}
                     />
                   </Pressable>
-                  <AnimatedSubmitButton
-                    canSubmit={canSubmit}
-                    onPress={submit}
-                    styles={styles}
-                    colors={colors}
-                    accessibilityLabel="Send message"
-                  />
+                  {streaming && onStop && !hasText ? (
+                    <StopButton
+                      onPress={onStop}
+                      styles={styles}
+                      colors={colors}
+                    />
+                  ) : (
+                    <AnimatedSubmitButton
+                      canSubmit={canSubmit}
+                      onPress={submit}
+                      styles={styles}
+                      colors={colors}
+                      accessibilityLabel={
+                        streaming ? "Queue follow-up message" : "Send message"
+                      }
+                    />
+                  )}
                 </View>
               </View>
               {dictationBelow && (
@@ -1608,13 +1677,21 @@ export function ChatPane({
                 value={draft}
                 editable={composerEnabled}
               />
-              {canSubmit ? (
+              {streaming && onStop && !hasText ? (
+                <StopButton
+                  onPress={onStop}
+                  styles={styles}
+                  colors={colors}
+                />
+              ) : canSubmit ? (
                 <AnimatedSubmitButton
                   canSubmit={canSubmit}
                   onPress={submit}
                   styles={styles}
                   colors={colors}
-                  accessibilityLabel="Send message"
+                  accessibilityLabel={
+                    streaming ? "Queue follow-up message" : "Send message"
+                  }
                 />
               ) : (
                 <Pressable
@@ -1709,14 +1786,32 @@ const makeStyles = (colors: Colors) =>
     },
 
     userRow: { flexDirection: "row", justifyContent: "flex-end" },
+    userColumn: { alignItems: "flex-end", maxWidth: "85%" },
     userBubble: {
       backgroundColor: colors.accentSoft,
       borderColor: colors.borderStrong,
       borderWidth: StyleSheet.hairlineWidth,
       borderRadius: 18,
       borderBottomRightRadius: 4,
-      maxWidth: "85%",
       padding: 12,
+    },
+    userBubbleQueued: { opacity: 0.55 },
+    queuedTag: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.medium,
+      fontSize: 11,
+      letterSpacing: 0.4,
+      marginTop: 4,
+      marginRight: 4,
+      textTransform: "uppercase",
+    },
+    stoppedTag: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.medium,
+      fontSize: 11,
+      letterSpacing: 0.4,
+      marginTop: 6,
+      textTransform: "uppercase",
     },
     userText: {
       color: colors.text,

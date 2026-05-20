@@ -36,6 +36,21 @@ type MobileSendChatRef = FunctionReference<
 export const mobileSendChatRef: MobileSendChatRef =
   anyApi.mobile_chat.sendChat as unknown as MobileSendChatRef;
 
+type MobileCancelChatRef = FunctionReference<
+  "action",
+  "public",
+  {
+    requestId: string;
+    mobileDeviceId: string;
+    desktopDeviceId: string;
+    pairSecret: string;
+  },
+  null
+>;
+
+export const mobileCancelChatRef: MobileCancelChatRef =
+  anyApi.mobile_chat.cancelChat as unknown as MobileCancelChatRef;
+
 export const watchDesktopReplyRef = anyApi.mobile_replies
   .watchDesktopReply as FunctionReference<
   "query",

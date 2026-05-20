@@ -26,7 +26,8 @@ export type IconName =
   | "volume-2"
   | "volume-x"
   | "settings"
-  | "user";
+  | "user"
+  | "stop";
 
 const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name"]> = {
   "menu": "menu",
@@ -48,6 +49,7 @@ const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name
   "volume-x": "volume-x",
   "settings": "settings",
   "user": "user",
+  "stop": "square",
 };
 
 const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
@@ -70,6 +72,7 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "volume-x": "speaker.slash",
   "settings": "gearshape",
   "user": "person.crop.circle",
+  "stop": "stop.fill",
 };
 
 type IconProps = {

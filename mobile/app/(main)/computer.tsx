@@ -18,6 +18,7 @@ import { notifySuccess } from "../../src/lib/haptics";
 import { useStellaModelSelection } from "../../src/lib/model-selection";
 import {
   acknowledgeDesktopReplyRef,
+  mobileCancelChatRef,
   mobileSendChatRef,
   watchDesktopReplyRef,
 } from "../../src/lib/convex-refs";
@@ -100,6 +101,12 @@ type PendingReply = {
   replyId: string;
 };
 
+type QueuedSend = {
+  dispatchId: string;
+  userMessageId: string;
+  text: string;
+};
+
 const PENDING_REPLY_TIMEOUT_MS = 60_000;
 
 function AuthenticatedComputerChat() {
@@ -116,8 +123,26 @@ function AuthenticatedComputerChat() {
   const modelSelection = useStellaModelSelection();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settledRequestIdsRef = useRef<Set<string>>(new Set());
+  // Local follow-up queue (mirrors the chat screen). The Convex `sendChat`
+  // action can't be aborted mid-flight, so we hold queued messages here
+  // until the active reply settles, then dispatch the next one. Pressing
+  // Stop drops everything in the queue and marks the active reply as
+  // stopped — replies that still land from the desktop are acked and
+  // discarded so they don't appear after the fact.
+  const queueRef = useRef<QueuedSend[]>([]);
+  const stoppedRequestIdsRef = useRef<Set<string>>(new Set());
+  const stoppedDispatchIdsRef = useRef<Set<string>>(new Set());
+  const activeDispatchRef = useRef<{
+    dispatchId: string;
+    replyId: string;
+  } | null>(null);
+  // Forward declaration so `settlePendingReply` can call the latest
+  // `drainQueue` without depending on its identity (which would create a
+  // cycle through the `dispatch` callback's deps).
+  const drainQueueRef = useRef<(() => void) | null>(null);
 
   const sendChat = useAction(mobileSendChatRef);
+  const cancelChat = useAction(mobileCancelChatRef);
   const acknowledgeReply = useMutation(acknowledgeDesktopReplyRef);
 
   // Subscribe to the active request's reply row. Convex tears the
@@ -163,18 +188,24 @@ function AuthenticatedComputerChat() {
       if (settledRequestIdsRef.current.has(pending.requestId)) return;
       settledRequestIdsRef.current.add(pending.requestId);
       clearPendingTimeout();
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === pending.replyId ? { ...msg, text } : msg,
-        ),
-      );
-      if (ok) notifySuccess();
+      const wasStopped = stoppedRequestIdsRef.current.has(pending.requestId);
+      if (!wasStopped) {
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === pending.replyId ? { ...msg, text } : msg,
+          ),
+        );
+        if (ok) notifySuccess();
+      }
       setSending(false);
       setPendingReply(null);
       // Best-effort: tell the backend to drop the relayed row now that
       // the phone has it. Convex will TTL the row regardless, but
       // acking keeps Convex storage at "seconds in the happy path".
       void acknowledgeReply({ requestId: pending.requestId }).catch(() => {});
+      // Drain the next queued follow-up (no-op if the user pressed Stop,
+      // since Stop clears `queueRef` before this runs).
+      drainQueueRef.current?.();
     },
     [acknowledgeReply, clearPendingTimeout],
   );
@@ -188,73 +219,215 @@ function AuthenticatedComputerChat() {
 
   useEffect(() => clearPendingTimeout, [clearPendingTimeout]);
 
-  const send = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || sending || !mobileDeviceId || !phoneAccess) return;
+  const dispatch = useCallback(
+    async (item: QueuedSend) => {
+      // Promote the queued bubble (if any) out of the dimmed state and
+      // add an empty assistant placeholder beside it.
+      const replyId = createId();
+      activeDispatchRef.current = { dispatchId: item.dispatchId, replyId };
+      setMessages((m) => [
+        ...m.map((msg) =>
+          msg.id === item.userMessageId ? { ...msg, queued: false } : msg,
+        ),
+        { id: replyId, role: "assistant", text: "" },
+      ]);
 
-    const userMsg: ChatMessage = { id: createId(), role: "user", text };
-    const replyId = createId();
+      if (!mobileDeviceId || !phoneAccess) {
+        activeDispatchRef.current = null;
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId
+              ? {
+                  ...msg,
+                  text: "Pair this phone with your desktop again.",
+                }
+              : msg,
+          ),
+        );
+        setSending(false);
+        drainQueueRef.current?.();
+        return;
+      }
+
+      try {
+        const result = await sendChat({
+          message: item.text,
+          mobileDeviceId,
+          desktopDeviceId: phoneAccess.desktopDeviceId,
+          pairSecret: phoneAccess.pairSecret,
+          model: modelSelection.selectedModel,
+        });
+        if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
+          activeDispatchRef.current = null;
+          if (result.kind === "pending") {
+            stoppedRequestIdsRef.current.add(result.requestId);
+            void acknowledgeReply({ requestId: result.requestId }).catch(
+              () => {},
+            );
+            void cancelChat({
+              requestId: result.requestId,
+              mobileDeviceId,
+              desktopDeviceId: phoneAccess.desktopDeviceId,
+              pairSecret: phoneAccess.pairSecret,
+            }).catch(() => {});
+          }
+          setSending(false);
+          return;
+        }
+        if (result.kind === "sync" || result.kind === "unavailable") {
+          activeDispatchRef.current = null;
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === replyId ? { ...msg, text: result.text } : msg,
+            ),
+          );
+          if (result.kind === "sync") notifySuccess();
+          setSending(false);
+          drainQueueRef.current?.();
+          return;
+        }
+
+        const pending: PendingReply = {
+          requestId: result.requestId,
+          replyId,
+        };
+        activeDispatchRef.current = null;
+        setPendingReply(pending);
+        timeoutRef.current = setTimeout(() => {
+          settlePendingReply(
+            pending,
+            "Stella didn\u2019t reply in time. Try again in a moment.",
+            false,
+          );
+        }, PENDING_REPLY_TIMEOUT_MS);
+      } catch (e) {
+        activeDispatchRef.current = null;
+        if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
+          setSending(false);
+          return;
+        }
+        const message = userFacingError(e);
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId ? { ...msg, text: message } : msg,
+          ),
+        );
+        setSending(false);
+        drainQueueRef.current?.();
+      }
+    },
+    [
+      mobileDeviceId,
+      modelSelection.selectedModel,
+      phoneAccess,
+      sendChat,
+      acknowledgeReply,
+      cancelChat,
+      settlePendingReply,
+    ],
+  );
+
+  const drainQueue = useCallback(() => {
+    const next = queueRef.current.shift();
+    if (!next) return;
+    setSending(true);
+    void dispatch(next);
+  }, [dispatch]);
+
+  useEffect(() => {
+    drainQueueRef.current = drainQueue;
+  }, [drainQueue]);
+
+  const send = useCallback(() => {
+    const text = draft.trim();
+    if (!text || !mobileDeviceId || !phoneAccess) return;
+
+    const userMessageId = createId();
+    const userMsg: ChatMessage = {
+      id: userMessageId,
+      role: "user",
+      text,
+      ...(sending ? { queued: true } : {}),
+    };
 
     setDraft("");
-    setSending(true);
     LayoutAnimation.configureNext({
       duration: 350,
       update: { type: LayoutAnimation.Types.spring, springDamping: 1 },
     });
-    setMessages((m) => [
-      ...m,
-      userMsg,
-      { id: replyId, role: "assistant", text: "" },
-    ]);
+    setMessages((m) => [...m, userMsg]);
 
-    try {
-      const result = await sendChat({
-        message: text,
-        mobileDeviceId,
-        desktopDeviceId: phoneAccess.desktopDeviceId,
-        pairSecret: phoneAccess.pairSecret,
-        model: modelSelection.selectedModel,
-      });
-      if (result.kind === "sync" || result.kind === "unavailable") {
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === replyId ? { ...msg, text: result.text } : msg,
-          ),
-        );
-        if (result.kind === "sync") notifySuccess();
-        setSending(false);
-        return;
-      }
-
-      const pending: PendingReply = {
-        requestId: result.requestId,
-        replyId,
-      };
-      setPendingReply(pending);
-      timeoutRef.current = setTimeout(() => {
-        settlePendingReply(
-          pending,
-          "Stella didn\u2019t reply in time. Try again in a moment.",
-          false,
-        );
-      }, PENDING_REPLY_TIMEOUT_MS);
-    } catch (e) {
-      const message = userFacingError(e);
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === replyId ? { ...msg, text: message } : msg,
-        ),
-      );
-      setSending(false);
+    const item: QueuedSend = { dispatchId: createId(), userMessageId, text };
+    if (sending) {
+      queueRef.current.push(item);
+    } else {
+      setSending(true);
+      void dispatch(item);
     }
   }, [
+    dispatch,
     draft,
     mobileDeviceId,
-    modelSelection.selectedModel,
     phoneAccess,
-    sendChat,
     sending,
-    settlePendingReply,
+  ]);
+
+  const stop = useCallback(() => {
+    // Remove every queued follow-up before signalling the active pending
+    // reply — settlePendingReply consults `stoppedRequestIdsRef` and the
+    // (now-empty) queue to decide whether to render the desktop reply or
+    // discard it. Any reply that still lands gets acked + dropped.
+    const cancelledIds = queueRef.current.map((q) => q.userMessageId);
+    queueRef.current = [];
+    if (cancelledIds.length > 0) {
+      setMessages((m) => m.filter((msg) => !cancelledIds.includes(msg.id)));
+    }
+    const active = pendingReply;
+    if (active) {
+      stoppedRequestIdsRef.current.add(active.requestId);
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === active.replyId
+            ? { ...msg, text: msg.text, stopped: true }
+            : msg,
+        ),
+      );
+      clearPendingTimeout();
+      setPendingReply(null);
+      // Pre-ack so any reply the desktop manages to publish before the
+      // server-side cancel lands doesn't render on the phone.
+      void acknowledgeReply({ requestId: active.requestId }).catch(() => {});
+      // True server-side cancellation: patches the `remote_turn_request`
+      // row to `cancelled` so the desktop's cancel subscription aborts
+      // the in-flight orchestrator run. Best-effort — if it fails the
+      // local pre-ack still suppresses any reply that eventually lands.
+      if (mobileDeviceId && phoneAccess) {
+        void cancelChat({
+          requestId: active.requestId,
+          mobileDeviceId,
+          desktopDeviceId: phoneAccess.desktopDeviceId,
+          pairSecret: phoneAccess.pairSecret,
+        }).catch(() => {});
+      }
+    } else if (activeDispatchRef.current) {
+      const activeDispatch = activeDispatchRef.current;
+      stoppedDispatchIdsRef.current.add(activeDispatch.dispatchId);
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === activeDispatch.replyId
+            ? { ...msg, text: msg.text, stopped: true }
+            : msg,
+        ),
+      );
+    }
+    setSending(false);
+  }, [
+    acknowledgeReply,
+    cancelChat,
+    clearPendingTimeout,
+    mobileDeviceId,
+    pendingReply,
+    phoneAccess,
   ]);
 
   const dictationHeaders = useMemo(() => undefined, []);
@@ -358,7 +531,6 @@ function AuthenticatedComputerChat() {
 
   const canSubmit =
     draft.trim().length > 0 &&
-    !sending &&
     paired === true &&
     Boolean(mobileDeviceId) &&
     Boolean(phoneAccess);
@@ -371,7 +543,8 @@ function AuthenticatedComputerChat() {
       draft={draft}
       onChangeDraft={setDraft}
       canSubmit={canSubmit}
-      onSubmit={() => void send()}
+      onSubmit={send}
+      onStop={stop}
       placeholder="Ask Stella to do something"
       composerEnabled
       enableAttachments={false}

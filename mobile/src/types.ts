@@ -12,6 +12,16 @@ export type ChatMessage = {
    * fallback covers that gracefully.
    */
   thumbnailUris?: string[];
+  /**
+   * User message: the message is queued behind an in-flight reply and has
+   * not been dispatched yet. Renders dimmed with a small "Queued" label.
+   */
+  queued?: boolean;
+  /**
+   * Assistant message: the user pressed Stop before the reply completed.
+   * Renders with a trailing "Stopped" affordance.
+   */
+  stopped?: boolean;
 };
 
 export type DesktopBridgeStatus = {
