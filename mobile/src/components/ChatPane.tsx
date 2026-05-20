@@ -1151,7 +1151,13 @@ export function ChatPane({
     if (isNewAssistant) {
       scroll.resetAssistantAutoScroll();
     }
-    if (isNewAssistant || grewText) {
+    // Only engage the animated catch-up while a reply is actively streaming
+    // (or pending, for the computer chat). Without this gate, hydrating saved
+    // history on tab mount looks like a fresh assistant message with huge
+    // "growth" (baseline=0 before the list lays out), and the follow loop
+    // animates a ~400px scroll on top of the initial scrollToEnd — the chat
+    // visibly readjusts every time the user switches to the tab.
+    if (streaming && (isNewAssistant || grewText)) {
       scroll.prepareAssistantLayoutFollow();
     }
     assistantTextLenRef.current = lastMessage.text.length;
