@@ -513,10 +513,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
   colors,
+  isStreaming,
 }: {
   item: ChatMessage;
   styles: ChatStyles;
   colors: Colors;
+  /** True for the trailing assistant message while a reply is mid-stream. */
+  isStreaming: boolean;
 }) {
   if (item.role === "user") {
     const thumbs = item.thumbnailUris ?? [];
@@ -568,7 +571,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
     >
-      <AssistantMarkdown text={item.text} colors={colors} />
+      <AssistantMarkdown
+        text={item.text}
+        colors={colors}
+        isStreaming={isStreaming}
+      />
       {item.stopped ? (
         <Text
           style={styles.stoppedTag}
@@ -1414,13 +1421,24 @@ export function ChatPane({
   const dismissPlusMenu = useCallback(() => setPlusMenuAnchor(null), []);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
+  // Stream fade is driven per-row: only the trailing assistant message
+  // animates while `streaming` is true. AssistantMarkdown itself latches
+  // this flag for the row's lifetime, so the per-phrase fade keeps running
+  // through the brief render where `streaming` flips false at end-of-turn.
+  const streamingAssistantId =
+    streaming && lastMessage?.role === "assistant" ? lastMessage.id : null;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <FadeInMessage key={item.id}>
-        <ChatMessageRow item={item} styles={styles} colors={colors} />
+        <ChatMessageRow
+          item={item}
+          styles={styles}
+          colors={colors}
+          isStreaming={item.id === streamingAssistantId}
+        />
       </FadeInMessage>
     ),
-    [styles, colors],
+    [styles, colors, streamingAssistantId],
   );
   const renderSeparator = useCallback(
     () => <View style={styles.itemSeparator} />,

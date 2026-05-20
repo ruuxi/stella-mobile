@@ -10,13 +10,18 @@
  * model is typing, matching streamdown's "be forgiving about unclosed
  * markers" behaviour.
  */
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { Linking, Platform, StyleSheet, View } from "react-native";
 import Markdown, { MarkdownIt } from "react-native-markdown-display";
 import * as WebBrowser from "expo-web-browser";
 import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
 import type { Colors } from "../theme/colors";
+import {
+  StreamingLedgerProvider,
+  createStreamingTextRule,
+  useStreamingLedger,
+} from "./StreamingMarkdownText";
 const BASE_FONT_SIZE = 17;
 const BASE_LINE_HEIGHT = BASE_FONT_SIZE * 1.52;
 
@@ -205,28 +210,62 @@ async function openLink(url: string) {
 export function AssistantMarkdown({
   text,
   colors,
+  isStreaming = false,
 }: {
   text: string;
   colors: Colors;
+  /**
+   * True while this message is mid-stream. Triggers the per-phrase fade
+   * reveal — see `StreamingMarkdownText.tsx`. We latch this to true for
+   * the row's lifetime once it flips, so finishing the stream doesn't
+   * remount the markdown tree (which would snap any in-flight fades).
+   */
+  isStreaming?: boolean;
 }) {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const source = useMemo(() => tolerateStreamingMarkers(text), [text]);
+
+  const hasStreamedRef = useRef(false);
+  if (isStreaming) {
+    hasStreamedRef.current = true;
+  }
+  const useStreamingRule = hasStreamedRef.current;
+  const ledger = useStreamingLedger();
+
+  // Fresh cursor per render — the rule walks the AST in document order
+  // and needs to start at offset 0 every time. The Markdown component
+  // re-parses on every text update anyway, so recreating the rules
+  // object here doesn't add work.
+  const rules = useStreamingRule
+    ? { text: createStreamingTextRule() }
+    : undefined;
+
+  const markdown = (
+    <Markdown
+      style={styles}
+      mergeStyle
+      onLinkPress={(url) => {
+        void openLink(url);
+        return false;
+      }}
+      markdownit={markdownIt}
+      rules={rules}
+    >
+      {source}
+    </Markdown>
+  );
 
   return (
     // The wrapping View lets the parent Pressable still receive long-press —
     // markdown children render as Text/Views that don't intercept the gesture.
     <View>
-      <Markdown
-        style={styles}
-        mergeStyle
-        onLinkPress={(url) => {
-          void openLink(url);
-          return false;
-        }}
-        markdownit={markdownIt}
-      >
-        {source}
-      </Markdown>
+      {useStreamingRule ? (
+        <StreamingLedgerProvider ledger={ledger}>
+          {markdown}
+        </StreamingLedgerProvider>
+      ) : (
+        markdown
+      )}
     </View>
   );
 }
