@@ -104,6 +104,19 @@ export async function registerForPushNotifications(): Promise<void> {
   }
 }
 
+/** Remove this phone's push token rows for the currently signed-in account. */
+export async function unregisterForPushNotifications(): Promise<void> {
+  try {
+    const mobileDeviceId = await getOrCreateMobileDeviceId();
+    await postJson("/api/mobile/push-token/unregister", {
+      mobileDeviceId,
+    });
+    registered = false;
+  } catch {
+    // Best-effort — sign-out should still work even if the network is down.
+  }
+}
+
 /**
  * Wire up interactive notification categories and a tap handler that
  * routes the user to the right surface when they engage with a push

@@ -29,6 +29,7 @@ import {
   setNotificationsMuted,
   subscribeNotificationsMuted,
 } from "../../src/lib/notifications-prefs";
+import { unregisterForPushNotifications } from "../../src/lib/notifications";
 import { GlassCard } from "../../src/components/GlassCard";
 import { type Colors } from "../../src/theme/colors";
 import {
@@ -164,6 +165,7 @@ export default function AccountScreen() {
   const signOut = async () => {
     setIsSigningOut(true);
     try {
+      await unregisterForPushNotifications();
       await authClient.signOut();
       clearCachedToken();
     } finally {
@@ -180,6 +182,7 @@ export default function AccountScreen() {
       if (typeof client.deleteUser !== "function") {
         throw new Error("Account deletion is not available in this build.");
       }
+      await unregisterForPushNotifications();
       await client.deleteUser({});
       clearCachedToken();
       await authClient.signOut();
