@@ -6,12 +6,16 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_NO_CAPABILITY_SYNC": "1"
+      }
     },
     "preview": {
       "distribution": "store",
       "autoIncrement": true,
       "env": {
+        "EXPO_NO_CAPABILITY_SYNC": "1",
         "EXPO_PUBLIC_CONVEX_URL": "https://benevolent-minnow-586.convex.cloud",
         "EXPO_PUBLIC_CONVEX_SITE_URL": "https://cloud.stella.sh"
       }
@@ -19,6 +23,7 @@
     "production": {
       "autoIncrement": true,
       "env": {
+        "EXPO_NO_CAPABILITY_SYNC": "1",
         "EXPO_PUBLIC_CONVEX_URL": "https://benevolent-minnow-586.convex.cloud",
         "EXPO_PUBLIC_CONVEX_SITE_URL": "https://cloud.stella.sh"
       }
