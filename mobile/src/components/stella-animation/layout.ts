@@ -9,8 +9,15 @@ export const STELLA_EDGE_SCALE = 2.5;
 /** Desktop `--ascii-font-size` / `--ascii-line-height` for the creature. */
 export const STELLA_GLYPH_PX = 7;
 
-/** Character-grid size used by the inline working indicator on desktop. */
-export const WORKING_INDICATOR_GRID = 20;
+/**
+ * Character-grid size used by the inline working indicator.
+ *
+ * Desktop uses 20. On mobile we render the creature into a small ~52pt circle
+ * (much smaller than desktop's 350px supersampled canvas), so a coarser grid
+ * keeps the silhouette readable — at higher grid values each glyph collapses
+ * below the 4-pixel minimum and the creature visually disappears.
+ */
+export const WORKING_INDICATOR_GRID = 10;
 
 /** Desktop `.indicator-stella-scale { transform: scale(0.2) }`. */
 export const WORKING_INDICATOR_RENDER_SCALE = 0.2;
@@ -19,7 +26,7 @@ export const WORKING_INDICATOR_RENDER_SCALE = 0.2;
  * Visible clip diameter after supersampling (350 × 0.2 ≈ 70 on desktop).
  * We render at this size directly — RN GLView breaks inside `transform: scale`.
  */
-export const WORKING_INDICATOR_DISPLAY_PT = 70;
+export const WORKING_INDICATOR_DISPLAY_PT = 52;
 
 /** Circular mask diameter — matches display so GLView stays fully on-screen. */
 export const WORKING_INDICATOR_VIEWPORT_PT = WORKING_INDICATOR_DISPLAY_PT;

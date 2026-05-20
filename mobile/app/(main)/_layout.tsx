@@ -163,10 +163,17 @@ export default function MainLayout() {
   }, [wide]);
 
   // -- Gesture: swipe right anywhere on the app to open --
+  // `Keyboard.dismiss` is a method on the native Keyboard module and isn't
+  // serializable into the Worklets UI runtime, so wrap it in a plain JS
+  // function before handing it to `runOnJS`.
+  const dismissKeyboard = () => Keyboard.dismiss();
   const openPan = Gesture.Pan()
     .enabled(!sidebarOpen)
     .activeOffsetX(15)
     .failOffsetY([-20, 20])
+    .onStart(() => {
+      runOnJS(dismissKeyboard)();
+    })
     .onUpdate((e) => {
       drawerProgress.value = Math.min(1, Math.max(0, e.translationX / SIDEBAR_WIDTH));
     })

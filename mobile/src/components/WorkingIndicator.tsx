@@ -1,5 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, StyleSheet, Text, View } from "react-native";
+import MaskedView from "@react-native-masked-view/masked-view";
+import { LinearGradient } from "expo-linear-gradient";
+import { fadeHex } from "../theme/oklch";
 import {
   StellaAnimation,
   WORKING_INDICATOR_DISPLAY_PT,
@@ -10,7 +13,6 @@ import { computeWorkingIndicatorStatus } from "./working-indicator-status";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
-import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
 
 const indicatorLayout = getWorkingIndicatorLayout();
@@ -18,10 +20,18 @@ const ENTER_DURATION_MS = 320;
 const EXIT_HOLD_MS = 300;
 const EXIT_ANIMATION_MS = 480;
 const SWAP_DURATION_MS = 240;
+const INDICATOR_PAD_TOP = 0;
+const INDICATOR_PAD_BOTTOM = 0;
 
-/** Fixed slot height — reserved above the composer (padding + circular viewport). */
-export const WORKING_INDICATOR_SLOT_HEIGHT =
-  6 + indicatorLayout.viewport + 4;
+/**
+ * Reserved vertical space above the composer. Intentionally smaller than the
+ * creature viewport — the row is `overflow: visible`, so the creature extends
+ * a few pt above and below the slot, letting us claim less layout space while
+ * keeping Stella at her chosen size.
+ */
+export const WORKING_INDICATOR_SLOT_HEIGHT = Math.round(
+  indicatorLayout.viewport * 0.6,
+);
 
 interface WorkingIndicatorProps {
   /** When true, the indicator is visible and the creature animates. */
@@ -32,6 +42,15 @@ interface WorkingIndicatorProps {
   toolCallId?: string;
   isReasoning?: boolean;
 }
+
+const SHIMMER_DURATION_MS = 1600;
+// Strip is wider than the text so the bright peak fully exits before looping.
+const SHIMMER_GRADIENT_MULTIPLIER = 3;
+// Brightness range of the gradient stops. Tails almost vanish; peak is fully
+// opaque — yields a clearly visible sweeping highlight rather than a subtle
+// breath.
+const SHIMMER_DIM_ALPHA = 0.15;
+const SHIMMER_PEAK_ALPHA = 1;
 
 function ShimmerText({
   text,
@@ -45,67 +64,109 @@ function ShimmerText({
   styles: ReturnType<typeof makeStyles>;
 }) {
   const shimmer = useRef(new Animated.Value(0)).current;
+  const [textWidth, setTextWidth] = useState(0);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || textWidth === 0) {
       shimmer.stopAnimation();
       shimmer.setValue(0);
       return;
     }
-
     const loop = Animated.loop(
       Animated.timing(shimmer, {
         toValue: 1,
-        duration: 1350,
-        easing: Easing.inOut(Easing.cubic),
+        duration: SHIMMER_DURATION_MS,
+        easing: Easing.linear,
         useNativeDriver: true,
       }),
     );
     loop.start();
     return () => loop.stop();
-  }, [active, shimmer]);
+  }, [active, shimmer, textWidth]);
 
-  const shimmerStyle = useMemo(
-    () => ({
-      opacity: shimmer.interpolate({
-        inputRange: [0, 0.35, 0.65, 1],
-        outputRange: [0, 0.4, 0.4, 0],
+  const gradientWidth = Math.max(1, textWidth * SHIMMER_GRADIENT_MULTIPLIER);
+  // Slide the strip from x=-(gradientWidth - textWidth) (visible window
+  // shows the strip's right tail) toward x=0 (visible window shows the
+  // strip's left tail). The dim trough in the middle of the strip therefore
+  // crosses the visible mask region left → right exactly once per loop.
+  const gradientTranslate = useMemo(
+    () =>
+      shimmer.interpolate({
+        inputRange: [0, 1],
+        outputRange: [-(gradientWidth - textWidth), 0],
       }),
-      transform: [
-        {
-          translateX: shimmer.interpolate({
-            inputRange: [0, 1],
-            outputRange: [-36, 72],
-          }),
-        },
-      ],
-    }),
-    [shimmer],
+    [shimmer, gradientWidth, textWidth],
   );
+
+  const dimColor = fadeHex(colors.text, SHIMMER_DIM_ALPHA);
+  const peakColor = fadeHex(colors.text, SHIMMER_PEAK_ALPHA);
+
+  // Measurement pass — render once invisibly so onLayout fires, then we can
+  // size the masked gradient correctly on the next render.
+  if (textWidth === 0) {
+    return (
+      <View style={styles.shimmerWrap}>
+        <Text
+          style={[styles.statusText, styles.shimmerMeasure]}
+          numberOfLines={1}
+          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+          onLayout={(e) => setTextWidth(e.nativeEvent.layout.width)}
+        >
+          {text}
+        </Text>
+      </View>
+    );
+  }
+
+  if (!active) {
+    return (
+      <View style={styles.shimmerWrap}>
+        <Text
+          style={styles.statusText}
+          numberOfLines={1}
+          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+          onLayout={(e) => setTextWidth(e.nativeEvent.layout.width)}
+        >
+          {text}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.shimmerWrap}>
-      <Text
-        style={styles.statusText}
-        numberOfLines={1}
-        maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+      <MaskedView
+        style={{ height: 20, width: textWidth }}
+        maskElement={
+          <View style={styles.shimmerMaskHost}>
+            <Text
+              style={styles.statusText}
+              numberOfLines={1}
+              maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+              onLayout={(e) => setTextWidth(e.nativeEvent.layout.width)}
+            >
+              {text}
+            </Text>
+          </View>
+        }
       >
-        {text}
-      </Text>
-      {active ? (
-        <Animated.Text
-          style={[
-            styles.statusText,
-            styles.statusShimmer,
-            { color: colors.accent },
-            shimmerStyle,
-          ]}
-          numberOfLines={1}
-          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            width: gradientWidth,
+            height: 20,
+            transform: [{ translateX: gradientTranslate }],
+          }}
         >
-          {text}
-        </Animated.Text>
-      ) : null}
+          <LinearGradient
+            colors={[peakColor, peakColor, dimColor, peakColor, peakColor]}
+            locations={[0, 0.4, 0.5, 0.6, 1]}
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={StyleSheet.absoluteFill}
+          />
+        </Animated.View>
+      </MaskedView>
     </View>
   );
 }
@@ -218,9 +279,9 @@ function SwapText({
 /**
  * Stella above the composer.
  *
- * The GLView is never animated through parent opacity. On iOS that can make
- * UIKit snapshot and freeze the GL surface, so entrance/exit motion uses
- * transform only and the row is unmounted after the desktop-matched hold.
+ * Entrance/exit is a plain opacity fade on the whole row, and the row is
+ * unmounted after the desktop-matched hold so the GLView never sits invisible
+ * in the tree consuming GPU time.
  */
 export const WorkingIndicator = memo(function WorkingIndicator({
   active,
@@ -287,22 +348,7 @@ export const WorkingIndicator = memo(function WorkingIndicator({
   }, [active, renderShell, shellProgress]);
 
   const shellStyle = useMemo(
-    () => ({
-      transform: [
-        {
-          translateY: shellProgress.interpolate({
-            inputRange: [0, 1],
-            outputRange: [-2, 0],
-          }),
-        },
-        {
-          scale: shellProgress.interpolate({
-            inputRange: [0, 1],
-            outputRange: [0.92, 1],
-          }),
-        },
-      ],
-    }),
+    () => ({ opacity: shellProgress }),
     [shellProgress],
   );
 
@@ -323,7 +369,7 @@ export const WorkingIndicator = memo(function WorkingIndicator({
                 height={WORKING_INDICATOR_GRID}
                 displayWidth={WORKING_INDICATOR_DISPLAY_PT}
                 displayHeight={WORKING_INDICATOR_DISPLAY_PT}
-                frameSkip={1}
+                frameSkip={2}
                 paused={!active}
               />
             </View>
@@ -345,6 +391,7 @@ const makeStyles = (colors: Colors) =>
     slot: {
       height: WORKING_INDICATOR_SLOT_HEIGHT,
       flexShrink: 0,
+      overflow: "visible",
     },
     row: {
       alignItems: "center",
@@ -352,9 +399,10 @@ const makeStyles = (colors: Colors) =>
       gap: 8,
       height: WORKING_INDICATOR_SLOT_HEIGHT,
       justifyContent: "flex-start",
-      paddingBottom: 4,
-      paddingHorizontal: 24,
-      paddingTop: 6,
+      overflow: "visible",
+      paddingBottom: INDICATOR_PAD_BOTTOM,
+      paddingHorizontal: 18,
+      paddingTop: INDICATOR_PAD_TOP,
     },
     viewport: {
       borderRadius: 999,
@@ -380,7 +428,7 @@ const makeStyles = (colors: Colors) =>
       top: 0,
     },
     shimmerWrap: {
-      overflow: "hidden",
+      justifyContent: "center",
     },
     statusText: {
       color: colors.text,
@@ -389,15 +437,13 @@ const makeStyles = (colors: Colors) =>
       letterSpacing: -0.1,
       lineHeight: 20,
     },
-    statusShimmer: {
-      bottom: 0,
-      left: 0,
+    // Invisible measurement copy — needs to render so onLayout fires.
+    shimmerMeasure: {
       opacity: 0,
-      position: "absolute",
-      right: 0,
-      textShadowColor: fadeHex(colors.accent, 0.5),
-      textShadowOffset: { width: 0, height: 0 },
-      textShadowRadius: 8,
-      top: 0,
+    },
+    // MaskedView's mask is drawn into an alpha channel only — color doesn't
+    // matter as long as the glyphs are fully opaque.
+    shimmerMaskHost: {
+      backgroundColor: "transparent",
     },
   });
