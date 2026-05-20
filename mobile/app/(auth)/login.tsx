@@ -16,6 +16,7 @@ import {
 import * as SecureStore from "expo-secure-store";
 import { getSetCookie } from "@better-auth/expo/client";
 import { useRouter } from "expo-router";
+import Svg, { Path } from "react-native-svg";
 import { authClient } from "../../src/lib/auth-client";
 import { clearCachedToken } from "../../src/lib/auth-token";
 import { env } from "../../src/config/env";
@@ -37,9 +38,17 @@ const RESEND_GRACE_MS = 15_000;
 type SubmitState =
   | { type: "idle" }
   | { type: "sending" }
+  | { type: "google" }
   | { type: "sent"; requestId: string }
   | { type: "verifying" }
   | { type: "error"; message: string };
+
+type SocialSignInResult = {
+  error?: {
+    message?: string;
+    statusText?: string;
+  } | null;
+};
 
 export default function LoginScreen() {
   const colors = useColors();
@@ -89,6 +98,32 @@ export default function LoginScreen() {
         throw new Error(data.error || "Failed to send sign-in email.");
       }
       setSubmitState({ type: "sent", requestId: data.requestId });
+    } catch (error) {
+      setSubmitState({ type: "error", message: userFacingError(error) });
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    setSubmitState({ type: "google" });
+
+    try {
+      const result = (await authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/chat",
+      })) as SocialSignInResult | undefined;
+
+      if (result?.error) {
+        setSubmitState({
+          type: "error",
+          message:
+            result.error.message ||
+            result.error.statusText ||
+            "Google sign-in could not start.",
+        });
+        return;
+      }
+
+      router.replace("/chat");
     } catch (error) {
       setSubmitState({ type: "error", message: userFacingError(error) });
     }
@@ -193,108 +228,146 @@ export default function LoginScreen() {
             Your assistant,{"\n"}pocket-sized.
           </Text>
           <Text style={styles.body}>
-            Sign in with the email you use on your computer.
+            Use Google or the email you use on your computer.
           </Text>
         </Pressable>
 
         <View style={styles.formArea}>
-        <TextInput
-          autoCapitalize="none"
-          autoComplete="email"
-          keyboardType="email-address"
-          onChangeText={setEmail}
-          placeholder="Email"
-          placeholderTextColor={fadeHex(colors.textMuted, 0.4)}
-          style={styles.input}
-          value={email}
-        />
-
-        <Pressable
-          onPress={() => {
-            void sendMagicLink();
-          }}
-          disabled={submitState.type === "sending" || submitState.type === "sent" || submitState.type === "verifying"}
-          style={({ pressed }) => [
-            styles.primaryButton,
-            pressed ? styles.primaryButtonPressed : null,
-            submitState.type !== "idle" && submitState.type !== "error"
-              ? styles.primaryButtonDisabled
-              : null,
-          ]}
-        >
-          <Text style={styles.primaryButtonText}>
-            {submitState.type === "sending"
-              ? "Sending..."
-              : submitState.type === "verifying"
-                ? "Signing in..."
-                : "Continue"}
-          </Text>
-        </Pressable>
-
-        {submitState.type === "sent" ? (
-          <View style={styles.sentBlock}>
-            <Text style={styles.successText}>
-              Check your inbox and tap the link — you'll be signed in
-              automatically.
+          <Pressable
+            onPress={() => {
+              void signInWithGoogle();
+            }}
+            disabled={
+              submitState.type === "google" ||
+              submitState.type === "sending" ||
+              submitState.type === "verifying"
+            }
+            accessibilityLabel="Continue with Google"
+            style={({ pressed }) => [
+              styles.googleButton,
+              pressed ? styles.googleButtonPressed : null,
+              submitState.type === "google"
+                ? styles.primaryButtonDisabled
+                : null,
+            ]}
+          >
+            <GoogleIcon />
+            <Text style={styles.googleButtonText}>
+              {submitState.type === "google"
+                ? "Opening Google..."
+                : "Continue with Google"}
             </Text>
-            <View style={styles.sentActions}>
-              <Pressable
-                onPress={editEmail}
-                accessibilityLabel="Use a different email"
-                style={({ pressed }) => [
-                  styles.inlineLink,
-                  pressed && styles.inlineLinkPressed,
-                ]}
-              >
-                <Text style={styles.inlineLinkText}>Use a different email</Text>
-              </Pressable>
-              {canResend ? (
+          </Pressable>
+
+          <View style={styles.methodDivider}>
+            <View style={styles.methodDividerLine} />
+            <Text style={styles.methodDividerText}>or use email</Text>
+            <View style={styles.methodDividerLine} />
+          </View>
+
+          <TextInput
+            autoCapitalize="none"
+            autoComplete="email"
+            keyboardType="email-address"
+            onChangeText={setEmail}
+            placeholder="Email"
+            placeholderTextColor={fadeHex(colors.textMuted, 0.4)}
+            style={styles.input}
+            value={email}
+          />
+
+          <Pressable
+            onPress={() => {
+              void sendMagicLink();
+            }}
+            disabled={
+              submitState.type === "sending" ||
+              submitState.type === "sent" ||
+              submitState.type === "verifying"
+            }
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pressed ? styles.primaryButtonPressed : null,
+              submitState.type !== "idle" && submitState.type !== "error"
+                ? styles.primaryButtonDisabled
+                : null,
+            ]}
+          >
+            <Text style={styles.primaryButtonText}>
+              {submitState.type === "sending"
+                ? "Sending..."
+                : submitState.type === "verifying"
+                  ? "Signing in..."
+                  : "Continue"}
+            </Text>
+          </Pressable>
+
+          {submitState.type === "sent" ? (
+            <View style={styles.sentBlock}>
+              <Text style={styles.successText}>
+                Check your inbox and tap the link — you'll be signed in
+                automatically.
+              </Text>
+              <View style={styles.sentActions}>
                 <Pressable
-                  onPress={() => void sendMagicLink()}
-                  accessibilityLabel="Resend sign-in email"
+                  onPress={editEmail}
+                  accessibilityLabel="Use a different email"
                   style={({ pressed }) => [
                     styles.inlineLink,
                     pressed && styles.inlineLinkPressed,
                   ]}
                 >
-                  <Text style={styles.inlineLinkText}>Resend</Text>
+                  <Text style={styles.inlineLinkText}>Use a different email</Text>
                 </Pressable>
-              ) : null}
+                {canResend ? (
+                  <Pressable
+                    onPress={() => void sendMagicLink()}
+                    accessibilityLabel="Resend sign-in email"
+                    style={({ pressed }) => [
+                      styles.inlineLink,
+                      pressed && styles.inlineLinkPressed,
+                    ]}
+                  >
+                    <Text style={styles.inlineLinkText}>Resend</Text>
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
-          </View>
-        ) : null}
+          ) : null}
 
-        {submitState.type === "error" ? (
-          <Text style={styles.errorText}>{submitState.message}</Text>
-        ) : null}
+          {submitState.type === "error" ? (
+            <Text style={styles.errorText}>{submitState.message}</Text>
+          ) : null}
 
-        <Text style={styles.legalFooter}>
-          By continuing, you agree to our{" "}
-          <Text
-            style={styles.legalLink}
-            onPress={() => setActiveLegal("terms")}
-          >
-            Terms
+          <Text style={styles.legalFooter}>
+            By continuing, you agree to our{" "}
+            <Text
+              style={styles.legalLink}
+              onPress={() => setActiveLegal("terms")}
+            >
+              Terms
+            </Text>
+            {" and "}
+            <Text
+              style={styles.legalLink}
+              onPress={() => setActiveLegal("privacy")}
+            >
+              Privacy Policy
+            </Text>
+            .
           </Text>
-          {" and "}
-          <Text
-            style={styles.legalLink}
-            onPress={() => setActiveLegal("privacy")}
-          >
-            Privacy Policy
-          </Text>
-          .
-        </Text>
 
-        <Pressable
-          onPress={() => void continueAsGuest()}
-          style={({ pressed }) => [
-            styles.guestButton,
-            pressed && styles.guestButtonPressed,
-          ]}
-        >
-          <Text style={styles.guestButtonText}>Continue without signing in</Text>
-        </Pressable>
+          <Pressable
+            onPress={() => void continueAsGuest()}
+            style={({ pressed }) => [
+              styles.guestButton,
+              pressed && styles.guestButtonPressed,
+            ]}
+          >
+            <Text style={styles.guestButtonText}>
+              Continue without signing in
+            </Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
 
@@ -334,6 +407,29 @@ export default function LoginScreen() {
   );
 }
 
+function GoogleIcon() {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 18 18">
+      <Path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.89 2.69-6.62Z"
+      />
+      <Path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.95-2.18l-2.91-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.33A9 9 0 0 0 9 18Z"
+      />
+      <Path
+        fill="#FBBC05"
+        d="M3.97 10.71A5.41 5.41 0 0 1 3.69 9c0-.59.1-1.16.28-1.71V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.04l3.01-2.33Z"
+      />
+      <Path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58C13.46.89 11.42 0 9 0A9 9 0 0 0 .96 4.96l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z"
+      />
+    </Svg>
+  );
+}
+
 const makeStyles = (colors: Colors) => StyleSheet.create({
   screen: {
     flex: 1,
@@ -368,6 +464,44 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   formArea: {
     gap: 12,
     paddingBottom: 16,
+  },
+  googleButton: {
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "center",
+    paddingVertical: 16,
+  },
+  googleButtonPressed: {
+    backgroundColor: fadeHex(colors.textMuted, 0.08),
+  },
+  googleButtonText: {
+    color: colors.text,
+    fontFamily: fonts.sans.semiBold,
+    fontSize: 17,
+    letterSpacing: -0.3,
+  },
+  methodDivider: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    paddingVertical: 2,
+  },
+  methodDividerLine: {
+    backgroundColor: colors.border,
+    flex: 1,
+    height: 1,
+  },
+  methodDividerText: {
+    color: colors.textMuted,
+    fontFamily: fonts.mono.regular,
+    fontSize: 11,
+    letterSpacing: 0,
+    textTransform: "uppercase",
   },
   input: {
     backgroundColor: colors.surface,
