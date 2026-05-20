@@ -134,7 +134,7 @@ export default function MainLayout() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const colors = useColors();
-  const { isDark } = useTheme();
+  const { isDark, gradientMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   // Reanimated shared value: 0 = closed, 1 = fully open
@@ -244,19 +244,27 @@ export default function MainLayout() {
     opacity: drawerProgress.value * 0.18,
   }));
 
-  const gradient = (
-    <LinearGradient
-      colors={[
-        soften(colors.accent, colors.background, isDark ? 0.06 : 0.09),
-        colors.background,
-        soften(colors.ok, colors.background, isDark ? 0.04 : 0.06),
-      ]}
-      locations={[0, 0.5, 1]}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={StyleSheet.absoluteFill}
-    />
-  );
+  // In flat mode (or when a forcedMode theme like Pearl/Noir is active) we
+  // paint the plain theme background, matching the desktop Gradient → Flat
+  // setting. Soft mode keeps the diagonal accent ↔ background ↔ ok blob.
+  const gradient =
+    gradientMode === "flat" ? (
+      <View
+        style={[StyleSheet.absoluteFill, { backgroundColor: colors.background }]}
+      />
+    ) : (
+      <LinearGradient
+        colors={[
+          soften(colors.accent, colors.background, isDark ? 0.06 : 0.09),
+          colors.background,
+          soften(colors.ok, colors.background, isDark ? 0.04 : 0.06),
+        ]}
+        locations={[0, 0.5, 1]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+    );
 
   return (
     // edges=[] disables SafeAreaView's auto-padding so every layer below

@@ -5,6 +5,10 @@ import { type Colors, lightColors, darkColors } from "./colors";
 import { themes, defaultThemeId, getThemeById, type StellaTheme } from "./themes";
 
 export type ThemePreference = "light" | "dark" | "system";
+/** Mirrors desktop's gradient setting — `soft` paints the shifting blob,
+ *  `flat` paints the plain theme background with no gradient. Pearl/Noir
+ *  always resolve to `flat` regardless of the stored preference. */
+export type GradientMode = "soft" | "flat";
 
 type ThemeContextValue = {
   /** Light / Dark / System preference. */
@@ -19,10 +23,16 @@ type ThemeContextValue = {
   isDark: boolean;
   /** Resolved color palette. */
   colors: Colors;
+  /** User's stored gradient preference (before forcedMode coercion). */
+  gradientPreference: GradientMode;
+  setGradientPreference: (mode: GradientMode) => void;
+  /** Resolved gradient mode after applying theme `forcedMode` rules. */
+  gradientMode: GradientMode;
 };
 
 const MODE_KEY = "stella-color-mode";
 const THEME_KEY = "stella-theme-id";
+const GRADIENT_KEY = "stella-gradient-mode";
 
 const fallbackTheme: StellaTheme = {
   id: "__fallback",
@@ -39,24 +49,33 @@ const ThemeContext = createContext<ThemeContextValue>({
   themes,
   isDark: false,
   colors: lightColors,
+  gradientPreference: "soft",
+  setGradientPreference: () => {},
+  gradientMode: "soft",
 });
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useColorScheme();
   const [preference, setPreferenceState] = useState<ThemePreference>("system");
   const [themeId, setThemeIdState] = useState(defaultThemeId);
+  const [gradientPreference, setGradientPreferenceState] =
+    useState<GradientMode>("soft");
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     void Promise.all([
       AsyncStorage.getItem(MODE_KEY),
       AsyncStorage.getItem(THEME_KEY),
-    ]).then(([storedMode, storedTheme]) => {
+      AsyncStorage.getItem(GRADIENT_KEY),
+    ]).then(([storedMode, storedTheme, storedGradient]) => {
       if (storedMode === "light" || storedMode === "dark" || storedMode === "system") {
         setPreferenceState(storedMode);
       }
       if (storedTheme && getThemeById(storedTheme)) {
         setThemeIdState(storedTheme);
+      }
+      if (storedGradient === "soft" || storedGradient === "flat") {
+        setGradientPreferenceState(storedGradient);
       }
       setLoaded(true);
     });
@@ -74,6 +93,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const setGradientPreference = (mode: GradientMode) => {
+    setGradientPreferenceState(mode);
+    void AsyncStorage.setItem(GRADIENT_KEY, mode);
+  };
+
   // Propagate the JS theme preference down to UIKit so system chrome (Liquid
   // Glass surfaces, native popovers, the keyboard appearance, the status bar
   // trait, etc.) follows the in-app picker rather than the OS-level setting.
@@ -86,15 +110,35 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     );
   }, [loaded, preference]);
 
-  const isDark =
+  const prefersDark =
     preference === "system" ? systemScheme === "dark" : preference === "dark";
 
   const theme = getThemeById(themeId) ?? fallbackTheme;
+  // Pearl/Noir are pinned-mode themes on desktop; mirror that here so picking
+  // Pearl while the phone is dark doesn't render its (nonexistent) dark
+  // variant, and vice versa for Noir.
+  const isDark = theme.forcedMode
+    ? theme.forcedMode === "dark"
+    : prefersDark;
   const colors = isDark ? theme.dark : theme.light;
+  // Pearl/Noir are standardized single-surface themes — desktop coerces them
+  // to flat (no gradient blob) regardless of preference, so do the same here.
+  const gradientMode: GradientMode = theme.forcedMode ? "flat" : gradientPreference;
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ preference, setPreference, theme, setThemeId, themes, isDark, colors }),
-    [preference, themeId, isDark],
+    () => ({
+      preference,
+      setPreference,
+      theme,
+      setThemeId,
+      themes,
+      isDark,
+      colors,
+      gradientPreference,
+      setGradientPreference,
+      gradientMode,
+    }),
+    [preference, themeId, isDark, gradientPreference, gradientMode],
   );
 
   if (!loaded) return null;

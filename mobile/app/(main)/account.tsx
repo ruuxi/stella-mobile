@@ -34,6 +34,7 @@ import { type Colors } from "../../src/theme/colors";
 import {
   useColors,
   useTheme,
+  type GradientMode,
   type ThemePreference,
 } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
@@ -42,6 +43,11 @@ const APPEARANCE_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "system", label: "System" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
+];
+
+const GRADIENT_OPTIONS: { value: GradientMode; label: string }[] = [
+  { value: "soft", label: "Soft" },
+  { value: "flat", label: "Flat" },
 ];
 
 const UPGRADE_URL = "https://stella.sh/pricing";
@@ -64,7 +70,12 @@ export default function AccountScreen() {
     setThemeId,
     themes,
     isDark,
+    gradientPreference,
+    setGradientPreference,
   } = useTheme();
+  // Pearl/Noir force flat — disable the Soft option so the toggle reflects
+  // the actual rendered surface instead of misleading the user.
+  const gradientLocked = Boolean(activeTheme.forcedMode);
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -310,9 +321,50 @@ export default function AccountScreen() {
         ))}
       </View>
 
+      <View style={styles.themeRow}>
+        {GRADIENT_OPTIONS.map((opt) => {
+          const isSelected = gradientLocked
+            ? opt.value === "flat"
+            : gradientPreference === opt.value;
+          const disabled = gradientLocked && opt.value !== "flat";
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => {
+                if (disabled) return;
+                tapLight();
+                setGradientPreference(opt.value);
+              }}
+              disabled={disabled}
+              accessibilityLabel={`Use ${opt.label} background`}
+              accessibilityState={{ selected: isSelected, disabled }}
+              style={[
+                styles.themeOption,
+                isSelected && styles.themeOptionActive,
+                disabled && styles.themeOptionDisabled,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.themeOptionText,
+                  isSelected && styles.themeOptionTextActive,
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       <View style={styles.themeDots}>
         {themes.map((th) => {
-          const preview = isDark ? th.dark : th.light;
+          // Honor pinned-mode themes (Pearl/Noir) when previewing — otherwise
+          // the swatch shows a palette the user can never actually land on.
+          const previewDark = th.forcedMode
+            ? th.forcedMode === "dark"
+            : isDark;
+          const preview = previewDark ? th.dark : th.light;
           const isActive = th.id === activeTheme.id;
           return (
             <Pressable
@@ -330,10 +382,20 @@ export default function AccountScreen() {
             >
               <View
                 style={[
-                  styles.themeDotInner,
-                  { backgroundColor: preview.accent },
+                  styles.themeDotSwatch,
+                  {
+                    backgroundColor: preview.background,
+                    borderColor: preview.border,
+                  },
                 ]}
-              />
+              >
+                <View
+                  style={[
+                    styles.themeDotAccent,
+                    { backgroundColor: preview.accent },
+                  ]}
+                />
+              </View>
             </Pressable>
           );
         })}
@@ -612,6 +674,9 @@ const makeStyles = (colors: Colors) =>
       backgroundColor: colors.accent,
       borderColor: colors.accent,
     },
+    themeOptionDisabled: {
+      opacity: 0.4,
+    },
     themeOptionText: {
       color: colors.text,
       fontFamily: fonts.sans.medium,
@@ -629,15 +694,24 @@ const makeStyles = (colors: Colors) =>
     themeDotOuter: {
       alignItems: "center",
       borderColor: "transparent",
-      borderRadius: 18,
+      borderRadius: 20,
       borderWidth: 2,
       justifyContent: "center",
       padding: 2,
     },
-    themeDotInner: {
-      borderRadius: 12,
-      height: 24,
-      width: 24,
+    themeDotSwatch: {
+      alignItems: "center",
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      height: 28,
+      justifyContent: "center",
+      overflow: "hidden",
+      width: 28,
+    },
+    themeDotAccent: {
+      borderRadius: 7,
+      height: 14,
+      width: 14,
     },
     toggleRow: {
       alignItems: "center",
