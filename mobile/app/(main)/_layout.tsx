@@ -8,6 +8,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Icon, type IconName } from "../../src/components/Icon";
 import { GlassCard } from "../../src/components/GlassCard";
+import { StellaBrandMark } from "../../src/components/StellaBrandMark";
 import {
   Keyboard,
   Pressable,
@@ -16,8 +17,6 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { authClient } from "../../src/lib/auth-client";
-import { isGuest } from "../../src/lib/guest-mode";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   interpolate,
@@ -44,7 +43,11 @@ const TABS: {
   { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
 
-const SIDEBAR_WIDTH = 232;
+const SIDEBAR_WIDTH = 320;
+/** How far the foreground slides right when the drawer opens. Decoupled
+ * from SIDEBAR_WIDTH so the sidebar can be widened (more breathing room
+ * for its content) without pushing the main content further right. */
+const DRAWER_REVEAL = 232;
 
 function readActiveTab(pathname: string): TabId | null {
   if (pathname === "/computer") return "computer";
@@ -69,30 +72,12 @@ function Sidebar({
   tabs: typeof TABS;
 }) {
   const insets = useSafeAreaInsets();
-  const session = authClient.useSession();
-  const user = session.data?.user;
-  const guest = isGuest();
-  const headerName = !guest && user ? (user.name?.trim() || user.email || "Account") : null;
-  const headerSub = !guest && user && user.name?.trim() ? user.email : null;
   return (
     <GlassCard
       radius={0}
       style={[styles.sidebar, { paddingTop: insets.top + 12, paddingBottom: insets.bottom }]}
     >
-      {headerName ? (
-        <View style={styles.identityBlock}>
-          <Text style={styles.identityName} numberOfLines={1}>
-            {headerName}
-          </Text>
-          {headerSub ? (
-            <Text style={styles.identitySub} numberOfLines={1}>
-              {headerSub}
-            </Text>
-          ) : null}
-        </View>
-      ) : (
-        <Text style={styles.brand}>Stella</Text>
-      )}
+      <StellaBrandMark />
       <View style={styles.nav}>
         {tabs.map((tab) => {
           const active = activeTab === tab.id;
@@ -175,7 +160,7 @@ export default function MainLayout() {
       runOnJS(dismissKeyboard)();
     })
     .onUpdate((e) => {
-      drawerProgress.value = Math.min(1, Math.max(0, e.translationX / SIDEBAR_WIDTH));
+      drawerProgress.value = Math.min(1, Math.max(0, e.translationX / DRAWER_REVEAL));
     })
     .onEnd((e) => {
       if (e.velocityX > 500 || drawerProgress.value > 0.4) {
@@ -195,7 +180,7 @@ export default function MainLayout() {
       .onUpdate((e) => {
         drawerProgress.value = Math.min(
           1,
-          Math.max(0, 1 + e.translationX / SIDEBAR_WIDTH),
+          Math.max(0, 1 + e.translationX / DRAWER_REVEAL),
         );
       })
       .onEnd((e) => {
@@ -231,7 +216,7 @@ export default function MainLayout() {
         translateX: interpolate(
           drawerProgress.value,
           [0, 1],
-          [0, SIDEBAR_WIDTH],
+          [0, DRAWER_REVEAL],
         ),
       },
     ],
@@ -289,6 +274,10 @@ export default function MainLayout() {
         </>
       ) : (
         <View style={styles.narrowLayout}>
+          {/* Gradient backdrop — painted behind both sidebar and foreground
+              so the inset/rounded foreground reveals the same continuous
+              canvas through its curved corners (no contrasting bands). */}
+          {gradient}
           {/* Sidebar parked underneath at the left edge. Always mounted,
               statically positioned, edge-to-edge vertically. The foreground
               (below) slides right to reveal it, so the menu reads as a layer
@@ -313,7 +302,6 @@ export default function MainLayout() {
               without ever obscuring the sidebar. */}
           <GestureDetector gesture={drawerPan}>
             <Animated.View style={[styles.foregroundLayer, foregroundStyle]}>
-              {gradient}
               <View style={[styles.topBar, { paddingTop: insets.top }]}>
                 <View style={styles.topBarSide}>
                   <Pressable
@@ -411,36 +399,8 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   // Sidebar
   sidebar: {
-    borderRightColor: colors.border,
-    borderRightWidth: StyleSheet.hairlineWidth,
     flex: 1,
     width: SIDEBAR_WIDTH,
-  },
-  brand: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.medium,
-    fontSize: 13,
-    letterSpacing: 2.6,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    textTransform: "uppercase",
-  },
-  identityBlock: {
-    gap: 2,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-  },
-  identityName: {
-    color: colors.text,
-    fontFamily: fonts.sans.semiBold,
-    fontSize: 16,
-    letterSpacing: -0.3,
-  },
-  identitySub: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.regular,
-    fontSize: 12,
-    letterSpacing: -0.1,
   },
   nav: {
     gap: 2,
@@ -448,11 +408,13 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
   },
   navItem: {
     alignItems: "center",
+    alignSelf: "flex-start",
     borderRadius: 10,
     flexDirection: "row",
     gap: 12,
     paddingHorizontal: 14,
     paddingVertical: 11,
+    width: 188,
   },
   navItemActive: {
     backgroundColor: colors.accentSoft,
@@ -495,6 +457,11 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 18,
     elevation: 12,
+    overflow: "hidden",
+    borderTopLeftRadius: 56,
+    borderBottomLeftRadius: 56,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
 
   // Scrim painted on the foreground while the drawer is open. Dims the

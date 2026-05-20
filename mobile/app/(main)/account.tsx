@@ -52,6 +52,16 @@ const GRADIENT_OPTIONS: { value: GradientMode; label: string }[] = [
 
 const UPGRADE_URL = "https://stella.sh/pricing";
 
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "••••••••";
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  const head = local.slice(0, 1);
+  const asterisks = "*".repeat(Math.max(local.length - 1, 4));
+  return `${head}${asterisks}${domain}`;
+}
+
 function platformLabelFor(
   access: StoredPhoneAccess,
   platform: string | null | undefined,
@@ -93,12 +103,17 @@ export default function AccountScreen() {
   const [notificationsMuted, setMutedLocal] = useState(() =>
     getNotificationsMuted(),
   );
+  const [emailRevealed, setEmailRevealed] = useState(false);
 
   useEffect(() => subscribeNotificationsMuted(setMutedLocal), []);
 
   const user = session.data?.user;
   const email = user?.email ?? "";
-  const displayName = user?.name?.trim() || email;
+  const userName = user?.name?.trim() ?? "";
+
+  useEffect(() => {
+    setEmailRevealed(false);
+  }, [email]);
   // The whole "you have an account" surface — name/email header, upgrade card,
   // paired computers, sign-out, delete — only makes sense when the user has a
   // real session. Settings, appearance, notifications, and legal all work
@@ -241,16 +256,50 @@ export default function AccountScreen() {
       {isSignedIn ? (
         <>
           <View style={styles.identityBlock}>
-            <Text style={styles.identityName} numberOfLines={1}>
-              {displayName}
-            </Text>
-            {email && email !== displayName ? (
-              <Text style={styles.identityEmail} numberOfLines={1}>
-                {email}
+            {userName ? (
+              <Text style={styles.identityName} numberOfLines={1}>
+                {userName}
               </Text>
+            ) : null}
+            {email ? (
+              <View
+                style={[
+                  styles.identityEmailRow,
+                  !userName && styles.identityEmailRowPrimary,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.identityEmail,
+                    !userName && styles.identityEmailPrimary,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {emailRevealed ? email : maskEmail(email)}
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    tapLight();
+                    setEmailRevealed((revealed) => !revealed);
+                  }}
+                  hitSlop={10}
+                  accessibilityLabel={
+                    emailRevealed ? "Hide email" : "Show email"
+                  }
+                  style={styles.identityEmailToggle}
+                >
+                  <Icon
+                    name={emailRevealed ? "eye-off" : "eye"}
+                    size={18}
+                    color={colors.textMuted}
+                  />
+                </Pressable>
+              </View>
             ) : null}
           </View>
 
+          {/* Stella Pro upgrade card — hidden until mobile billing ships */}
+          {/*
           <GlassCard radius={14} ringed style={styles.upgradeCardWrap}>
             <Pressable
               onPress={openUpgrade}
@@ -269,6 +318,7 @@ export default function AccountScreen() {
               <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
             </Pressable>
           </GlassCard>
+          */}
         </>
       ) : showLoadingHeader ? (
         <Text style={styles.body}>Loading session…</Text>
@@ -587,11 +637,33 @@ const makeStyles = (colors: Colors) =>
       fontSize: 17,
       letterSpacing: -0.3,
     },
+    identityEmailRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+      marginTop: 1,
+    },
+    identityEmailRowPrimary: {
+      marginTop: 0,
+    },
     identityEmail: {
       color: colors.textMuted,
+      flex: 1,
       fontFamily: fonts.sans.regular,
       fontSize: 13,
       letterSpacing: -0.1,
+    },
+    identityEmailPrimary: {
+      color: colors.text,
+      fontFamily: fonts.sans.semiBold,
+      fontSize: 17,
+      letterSpacing: -0.3,
+    },
+    identityEmailToggle: {
+      alignItems: "center",
+      height: 28,
+      justifyContent: "center",
+      width: 28,
     },
     upgradeCardWrap: {
       marginTop: 16,
