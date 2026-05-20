@@ -18,7 +18,7 @@ import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
 import type { Colors } from "../theme/colors";
 const BASE_FONT_SIZE = 17;
-const BASE_LINE_HEIGHT = BASE_FONT_SIZE * 1.45;
+const BASE_LINE_HEIGHT = BASE_FONT_SIZE * 1.52;
 
 /** Balance trailing fences so partial code blocks still render while streaming. */
 function tolerateStreamingMarkers(input: string): string {

@@ -67,12 +67,12 @@ if (
 
 /**
  * Content-height threshold for pill → expanded.
- * Desktop uses scrollHeight > 44 which includes padding.
- * RN onContentSizeChange reports raw text height (no padding).
- * fontSize 16 × lineHeight ~22 ≈ 22 per line → two lines ≈ 44.
- * Use a value just above two lines so single-line typing stays pill.
+ * RN `onContentSizeChange` reports raw text height (no padding).
+ * fontSize 16 × lineHeight ~22 ≈ 22 per line; trip on the second line so
+ * wrapping immediately grows the composer instead of clipping behind the
+ * send button.
  */
-const EXPAND_THRESHOLD = 48;
+const EXPAND_THRESHOLD = 30;
 /** LayoutAnimation config matching the same 350ms critically-damped spring. */
 const LAYOUT_SPRING = {
   duration: 350,
@@ -121,6 +121,10 @@ const POST_SEND_NUDGE_PX = 128;
 
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
+/** Cancels the shell `content` padding so chat owns its horizontal inset. */
+const SHELL_CONTENT_PADDING = 20;
+/** Horizontal inset from the true screen edge once shell padding is cancelled. */
+const CHAT_HORIZONTAL_INSET = 12;
 
 // ---------------------------------------------------------------------------
 // Keyboard inset — keeps the composer and message list above the OS keyboard.
@@ -1217,6 +1221,7 @@ export function ChatPane({
 
   const [expanded, setExpanded] = useState(false);
   const hasMountedRef = useRef(false);
+  const wasFocusedRef = useRef(false);
 
   // When the parent clears draft after send, collapse back to pill shape.
   useEffect(() => {
@@ -1226,19 +1231,32 @@ export function ChatPane({
     }
   }, [draft, expanded]);
 
+  // The pill and expanded shapes render separate `TextInput` instances, so
+  // swapping between them drops focus and silently swallows the keystrokes
+  // that triggered the expansion. Re-focus the freshly-mounted input on the
+  // next frame so typing keeps flowing into it without a visible blur.
+  useEffect(() => {
+    if (!wasFocusedRef.current) return;
+    const handle = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(handle);
+  }, [expanded]);
+
+  // Expansion is one-way while the user is typing: the pill and expanded
+  // shapes give the text different widths, so a 2-line pill can re-flow to
+  // 1 line in expanded shape — flipping back to pill would re-wrap and
+  // oscillate forever. Collapse happens only when the parent clears the
+  // draft (see the `useEffect` above) or via dedicated dictation handlers.
   const handleContentSizeChange = useCallback(
     (e: { nativeEvent: { contentSize: { height: number } } }) => {
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return;
       }
+      if (expanded) return;
       const h = e.nativeEvent.contentSize.height;
-      if (!expanded && h > EXPAND_THRESHOLD) {
+      if (h > EXPAND_THRESHOLD) {
         LayoutAnimation.configureNext(LAYOUT_SPRING);
         setExpanded(true);
-      } else if (expanded && h <= EXPAND_THRESHOLD) {
-        LayoutAnimation.configureNext(LAYOUT_SPRING);
-        setExpanded(false);
       }
     },
     [expanded],
@@ -1543,6 +1561,8 @@ export function ChatPane({
                 multiline
                 onChangeText={onChangeDraft}
                 onContentSizeChange={handleContentSizeChange}
+                onFocus={() => { wasFocusedRef.current = true; }}
+                onBlur={() => { wasFocusedRef.current = false; }}
                 blurOnSubmit={false}
                 placeholder={placeholder}
                 placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
@@ -1569,7 +1589,7 @@ export function ChatPane({
                   >
                     <Icon
                       name={isListening ? "mic-off" : "mic"}
-                      size={17}
+                      size={20}
                       color={
                         isListening ? colors.accentForeground : colors.textMuted
                       }
@@ -1611,12 +1631,12 @@ export function ChatPane({
               {plusButton}
               <TextInput
                 ref={inputRef}
+                multiline
                 scrollEnabled={false}
                 onChangeText={onChangeDraft}
                 onContentSizeChange={handleContentSizeChange}
-                blurOnSubmit
-                onSubmitEditing={submit}
-                returnKeyType="send"
+                onFocus={() => { wasFocusedRef.current = true; }}
+                onBlur={() => { wasFocusedRef.current = false; }}
                 placeholder={
                   dictation.isTranscribing ? "Transcribing\u2026" : placeholder
                 }
@@ -1658,7 +1678,7 @@ export function ChatPane({
                 >
                   <Icon
                     name={isListening ? "mic-off" : "mic"}
-                    size={17}
+                    size={20}
                     color={
                       isListening ? colors.accentForeground : colors.textMuted
                     }
@@ -1688,7 +1708,11 @@ export function ChatPane({
 
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
-    screen: { flex: 1, position: "relative" },
+    screen: {
+      flex: 1,
+      marginHorizontal: -SHELL_CONTENT_PADDING,
+      position: "relative",
+    },
 
     // Anchored at the bottom of the screen, above the message list. The list
     // gets matching bottom inset (via `footerHeight`) so content can still be
@@ -1713,7 +1737,7 @@ const makeStyles = (colors: Colors) =>
       height: 44,
       justifyContent: "center",
       position: "absolute",
-      right: 16,
+      right: CHAT_HORIZONTAL_INSET,
       shadowColor: "#000",
       shadowOffset: { width: 0, height: 4 },
       shadowOpacity: 0.12,
@@ -1734,7 +1758,7 @@ const makeStyles = (colors: Colors) =>
       width: 10,
     },
     list: {
-      paddingHorizontal: 20,
+      paddingHorizontal: CHAT_HORIZONTAL_INSET,
       paddingTop: 80,
       paddingBottom: EDGE_FADE,
     },
@@ -1747,7 +1771,7 @@ const makeStyles = (colors: Colors) =>
     },
 
     userRow: { flexDirection: "row", justifyContent: "flex-end" },
-    userColumn: { alignItems: "flex-end", maxWidth: "85%" },
+    userColumn: { alignItems: "flex-end", maxWidth: "92%" },
     userBubble: {
       backgroundColor: colors.accentSoft,
       borderColor: colors.borderStrong,
@@ -1779,7 +1803,7 @@ const makeStyles = (colors: Colors) =>
       fontFamily: fonts.sans.regular,
       fontSize: 17,
       letterSpacing: 0.03 * 17,
-      lineHeight: 17 * 1.45,
+      lineHeight: 17 * 1.52,
     },
     userThumbStrip: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
     userThumbsAbove: { marginBottom: 8 },
@@ -1790,14 +1814,14 @@ const makeStyles = (colors: Colors) =>
       width: 84,
     },
 
-    assistantRow: { paddingHorizontal: 4, paddingVertical: 4 },
+    assistantRow: { paddingVertical: 4 },
     assistantText: {
       color: colors.text,
       fontFamily: fonts.sans.regular,
       fontSize: 17,
       fontWeight: "400",
       letterSpacing: 0.03 * 17,
-      lineHeight: 17 * 1.45,
+      lineHeight: 17 * 1.52,
     },
 
     composerWrap: {
@@ -1805,7 +1829,7 @@ const makeStyles = (colors: Colors) =>
       flexShrink: 0,
       gap: 8,
       paddingBottom: 6,
-      paddingHorizontal: 10,
+      paddingHorizontal: CHAT_HORIZONTAL_INSET,
       paddingTop: 12,
     },
 
@@ -1866,7 +1890,7 @@ const makeStyles = (colors: Colors) =>
       fontSize: 16,
       letterSpacing: -0.2,
       lineHeight: 22,
-      maxHeight: 30,
+      maxHeight: 32,
       paddingHorizontal: 4,
       paddingVertical: 0,
       ...(Platform.OS === "android"
