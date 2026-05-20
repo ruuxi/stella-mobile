@@ -1233,8 +1233,6 @@ export function ChatPane({
   }, [messages, readAloud.enabled, streaming]);
 
   const [expanded, setExpanded] = useState(false);
-  const hasMountedRef = useRef(false);
-  const wasFocusedRef = useRef(false);
 
   // When the parent clears draft after send, collapse back to pill shape.
   useEffect(() => {
@@ -1244,27 +1242,19 @@ export function ChatPane({
     }
   }, [draft, expanded]);
 
-  // The pill and expanded shapes render separate `TextInput` instances, so
-  // swapping between them drops focus and silently swallows the keystrokes
-  // that triggered the expansion. Re-focus the freshly-mounted input on the
-  // next frame so typing keeps flowing into it without a visible blur.
-  useEffect(() => {
-    if (!wasFocusedRef.current) return;
-    const handle = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(handle);
-  }, [expanded]);
-
   // Expansion is one-way while the user is typing: the pill and expanded
   // shapes give the text different widths, so a 2-line pill can re-flow to
   // 1 line in expanded shape — flipping back to pill would re-wrap and
   // oscillate forever. Collapse happens only when the parent clears the
   // draft (see the `useEffect` above) or via dedicated dictation handlers.
+  // Trigger expand purely on measured content height crossing the threshold.
+  // We used to gate on a `hasMounted` ref to skip the first event, but on
+  // screens where the composer's host re-renders shortly after mount (e.g.
+  // Computer tab settling `paired: null → true`) the *useful* first event —
+  // the one that already exceeds the threshold — could be the one that got
+  // swallowed, leaving the pill stuck at one line forever.
   const handleContentSizeChange = useCallback(
     (e: { nativeEvent: { contentSize: { height: number } } }) => {
-      if (!hasMountedRef.current) {
-        hasMountedRef.current = true;
-        return;
-      }
       if (expanded) return;
       const h = e.nativeEvent.contentSize.height;
       if (h > EXPAND_THRESHOLD) {
@@ -1578,27 +1568,59 @@ export function ChatPane({
                 onConfirm={() => void dictation.stop()}
               />
             </View>
-          ) : isExpandedComposed ? (
-            <View style={styles.formExpanded}>
-              <TextInput
-                ref={inputRef}
-                multiline
-                onChangeText={onChangeDraft}
-                onContentSizeChange={handleContentSizeChange}
-                onFocus={() => { wasFocusedRef.current = true; }}
-                onBlur={() => { wasFocusedRef.current = false; }}
-                blurOnSubmit={false}
-                placeholder={placeholder}
-                placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
-                selectionColor={colors.accent}
-                underlineColorAndroid="transparent"
-                style={styles.inputExpanded}
-                value={draft}
-                editable={composerEnabled}
-              />
-              <View style={styles.toolbar}>
-                <View style={styles.toolbarLeft}>{plusButton}</View>
-                <View style={styles.toolbarRight}>
+          ) : (
+            // Single TextInput, stable JSX position across pill ⇄ expanded so
+            // React reuses the same native UITextView when the shape swaps.
+            // Swapping between two separate <TextInput> instances dropped
+            // focus, which collapsed and re-summoned the keyboard on every
+            // expand — visible as a flicker whenever a line wrapped.
+            <View>
+              <View
+                style={
+                  isExpandedComposed ? styles.expandedInputBlock : styles.formPill
+                }
+              >
+                {isExpandedComposed ? null : plusButton}
+                <TextInput
+                  ref={inputRef}
+                  multiline
+                  scrollEnabled={isExpandedComposed}
+                  onChangeText={onChangeDraft}
+                  onContentSizeChange={handleContentSizeChange}
+                  blurOnSubmit={false}
+                  placeholder={
+                    isExpandedComposed
+                      ? placeholder
+                      : dictation.isTranscribing
+                        ? "Transcribing\u2026"
+                        : placeholder
+                  }
+                  placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
+                  selectionColor={colors.accent}
+                  underlineColorAndroid="transparent"
+                  style={
+                    isExpandedComposed ? styles.inputExpanded : styles.inputPill
+                  }
+                  value={draft}
+                  editable={composerEnabled}
+                />
+                {isExpandedComposed ? null : streaming && onStop && !hasText ? (
+                  <StopButton
+                    onPress={onStop}
+                    styles={styles}
+                    colors={colors}
+                  />
+                ) : canSubmit ? (
+                  <AnimatedSubmitButton
+                    canSubmit={canSubmit}
+                    onPress={submit}
+                    styles={styles}
+                    colors={colors}
+                    accessibilityLabel={
+                      streaming ? "Queue follow-up message" : "Send message"
+                    }
+                  />
+                ) : (
                   <Pressable
                     onPress={() => void toggleVoice()}
                     accessibilityLabel={
@@ -1620,26 +1642,58 @@ export function ChatPane({
                       filled={isListening}
                     />
                   </Pressable>
-                  {streaming && onStop && !hasText ? (
-                    <StopButton
-                      onPress={onStop}
-                      styles={styles}
-                      colors={colors}
-                    />
-                  ) : (
-                    <AnimatedSubmitButton
-                      canSubmit={canSubmit}
-                      onPress={submit}
-                      styles={styles}
-                      colors={colors}
-                      accessibilityLabel={
-                        streaming ? "Queue follow-up message" : "Send message"
-                      }
-                    />
-                  )}
-                </View>
+                )}
               </View>
-              {dictationBelow && (
+              {isExpandedComposed ? (
+                <View style={styles.toolbar}>
+                  <View style={styles.toolbarLeft}>{plusButton}</View>
+                  <View style={styles.toolbarRight}>
+                    <Pressable
+                      onPress={() => void toggleVoice()}
+                      accessibilityLabel={
+                        isListening ? "Stop voice input" : "Start voice input"
+                      }
+                      disabled={dictation.isTranscribing}
+                      style={[
+                        styles.micButton,
+                        isListening && styles.micButtonActive,
+                      ]}
+                      hitSlop={4}
+                    >
+                      <Icon
+                        name={isListening ? "mic-off" : "mic"}
+                        size={20}
+                        color={
+                          isListening
+                            ? colors.accentForeground
+                            : colors.textMuted
+                        }
+                        filled={isListening}
+                      />
+                    </Pressable>
+                    {streaming && onStop && !hasText ? (
+                      <StopButton
+                        onPress={onStop}
+                        styles={styles}
+                        colors={colors}
+                      />
+                    ) : (
+                      <AnimatedSubmitButton
+                        canSubmit={canSubmit}
+                        onPress={submit}
+                        styles={styles}
+                        colors={colors}
+                        accessibilityLabel={
+                          streaming
+                            ? "Queue follow-up message"
+                            : "Send message"
+                        }
+                      />
+                    )}
+                  </View>
+                </View>
+              ) : null}
+              {dictationBelow ? (
                 <View style={styles.dictationRow}>
                   <DictationRecordingBar
                     levels={dictation.levels}
@@ -1648,68 +1702,7 @@ export function ChatPane({
                     onConfirm={() => void dictation.stop()}
                   />
                 </View>
-              )}
-            </View>
-          ) : (
-            <View style={styles.formPill}>
-              {plusButton}
-              <TextInput
-                ref={inputRef}
-                multiline
-                scrollEnabled={false}
-                onChangeText={onChangeDraft}
-                onContentSizeChange={handleContentSizeChange}
-                onFocus={() => { wasFocusedRef.current = true; }}
-                onBlur={() => { wasFocusedRef.current = false; }}
-                placeholder={
-                  dictation.isTranscribing ? "Transcribing\u2026" : placeholder
-                }
-                placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
-                selectionColor={colors.accent}
-                underlineColorAndroid="transparent"
-                style={styles.inputPill}
-                value={draft}
-                editable={composerEnabled}
-              />
-              {streaming && onStop && !hasText ? (
-                <StopButton
-                  onPress={onStop}
-                  styles={styles}
-                  colors={colors}
-                />
-              ) : canSubmit ? (
-                <AnimatedSubmitButton
-                  canSubmit={canSubmit}
-                  onPress={submit}
-                  styles={styles}
-                  colors={colors}
-                  accessibilityLabel={
-                    streaming ? "Queue follow-up message" : "Send message"
-                  }
-                />
-              ) : (
-                <Pressable
-                  onPress={() => void toggleVoice()}
-                  accessibilityLabel={
-                    isListening ? "Stop voice input" : "Start voice input"
-                  }
-                  disabled={dictation.isTranscribing}
-                  style={[
-                    styles.micButton,
-                    isListening && styles.micButtonActive,
-                  ]}
-                  hitSlop={4}
-                >
-                  <Icon
-                    name={isListening ? "mic-off" : "mic"}
-                    size={20}
-                    color={
-                      isListening ? colors.accentForeground : colors.textMuted
-                    }
-                    filled={isListening}
-                  />
-                </Pressable>
-              )}
+              ) : null}
             </View>
           )}
         </GlassView>
@@ -1905,7 +1898,7 @@ const makeStyles = (colors: Colors) =>
       paddingHorizontal: 8,
       paddingVertical: 8,
     },
-    formExpanded: { flexDirection: "column" },
+    expandedInputBlock: { flexDirection: "column" },
 
     inputPill: {
       color: colors.text,
