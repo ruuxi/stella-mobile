@@ -37,6 +37,7 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
@@ -88,32 +89,35 @@ const LAYOUT_SPRING = {
   },
 };
 
-/** Pixels from the bottom of the content past which we show "scroll to bottom". */
-const SCROLL_AWAY_FROM_BOTTOM_THRESHOLD = 96;
-
-/** Small acknowledgement scroll on send, matching desktop's ~48px nudge. */
-const SEND_NUDGE_PX = 48;
-
-/** Breathing room below the streaming row while auto-following (desktop parity). */
-const FOLLOW_BREATHING_PX = 72;
-
-/** Peek of the prior message when the stream row pins to the top. */
-const FOLLOW_TOP_PEEK_PX = 56;
-
-/** Adaptive lerp toward the follow target (mirrors desktop scroll management). */
-const FOLLOW_LERP_FACTOR_BASE = 0.3;
-const FOLLOW_LERP_FACTOR_MAX = 0.65;
-const FOLLOW_LERP_FACTOR_SCALE = 0.005;
-const FOLLOW_HARD_SNAP_PX = 240;
-const FOLLOW_MIN_STEP_PX = 0.5;
-
 /**
- * Tail spacer below the conversation while a turn is in progress, so a freshly
- * sent user message can land near the top and the streaming assistant message
- * has room to grow into empty space (mirrors desktop's `.session-turn--last-turn`
- * reading-area min-height).
+ * Extra breathing room beyond the list's trailing slack (`EDGE_FADE` +
+ * measured composer height). The slack is empty scrollable padding so messages
+ * can sit above the overlay — without adding it, "near bottom" never engages
+ * in the normal reading position (desktop `followRearmThreshold` does the same).
  */
-const TAIL_SPACER_PX = 180;
+const SCROLL_NEAR_BOTTOM_BASE_PX = 96;
+/** Base distance before showing the scroll-to-bottom FAB (plus trailing slack). */
+const SCROLL_AWAY_FROM_BOTTOM_BASE_PX = 96;
+/**
+ * Max cumulative auto-scroll per assistant reply while near the bottom.
+ * Mirrors desktop follow stopping once the streaming row reaches the top.
+ */
+const ASSISTANT_AUTO_SCROLL_MAX_PX = 400;
+/**
+ * Adaptive auto-follow speed: base feels smooth for steady streams, scales up
+ * with how far behind we are so bursty token output catches up without snapping.
+ *
+ *   speed = clamp(base + pending * scale, base, max)
+ */
+const ASSISTANT_AUTO_SCROLL_BASE_SPEED_PX_PER_S = 400;
+const ASSISTANT_AUTO_SCROLL_MAX_SPEED_PX_PER_S = 1400;
+const ASSISTANT_AUTO_SCROLL_SPEED_SCALE_PER_PX = 4;
+/** Re-arm capped auto-follow once the user scrolls back to the true bottom. */
+const SCROLL_AT_BOTTOM_THRESHOLD = 8;
+/** Cap per-frame delta so a long hitch does not teleport the list. */
+const ASSISTANT_AUTO_SCROLL_MAX_FRAME_MS = 48;
+/** Small upward nudge after send so the user bubble clears room for the reply. */
+const POST_SEND_NUDGE_PX = 128;
 
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
@@ -172,350 +176,260 @@ function useKeyboardInset() {
 }
 
 // ---------------------------------------------------------------------------
-// Scroll model — mirrors desktop chat scroll behavior.
+// Scroll — manual by default; capped auto-follow while assistant streams in
+// near the bottom.
 // ---------------------------------------------------------------------------
 
-function useChatScroll(opts: { messages: ChatMessage[]; streaming: boolean }) {
-  const { messages, streaming } = opts;
+function useChatScroll(listTrailingSlackPx: number) {
   const listRef = useRef<FlashListRef<ChatMessage>>(null);
-  const offsetYRef = useRef(0);
-  const layoutHRef = useRef(0);
-  const contentHRef = useRef(0);
-  const pinnedRef = useRef(true);
-  const draggingRef = useRef(false);
-  const lockedRef = useRef(false);
-  /** Live height of the streaming assistant row (FlashList layout lags text growth). */
-  const streamingRowHeightRef = useRef(0);
-  const followTargetRef = useRef<number | null>(null);
-  const followRafRef = useRef<number | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
-
-  const streamingIndex = streaming ? messages.length - 1 : -1;
-  const streamingMessageId =
-    streamingIndex >= 0 ? messages[streamingIndex]?.id : null;
-  const streamingTextLen =
-    streamingIndex >= 0 ? messages[streamingIndex]?.text.length ?? 0 : 0;
-
-  const lastUserIndex = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") return i;
-    }
-    return -1;
-  }, [messages]);
-
-  useEffect(() => {
-    if (streaming) {
-      lockedRef.current = false;
-    } else {
-      streamingRowHeightRef.current = 0;
-    }
-  }, [streaming, lastUserIndex]);
-
-  const readScrollOffset = useCallback((list: FlashListRef<ChatMessage>) => {
-    if (typeof list.getAbsoluteLastScrollOffset === "function") {
-      return list.getAbsoluteLastScrollOffset();
-    }
-    return offsetYRef.current;
-  }, []);
-
-  const readContentHeight = useCallback((list: FlashListRef<ChatMessage>) => {
-    const dims = list.getChildContainerDimensions?.();
-    if (dims && dims.height > 0) return dims.height;
-    return contentHRef.current;
-  }, []);
-
-  const readMaxScrollOffset = useCallback(
-    (list: FlashListRef<ChatMessage>, viewportH: number, contentH: number) =>
-      Math.max(0, contentH - viewportH),
-    [],
-  );
+  const nearBottomLimit = SCROLL_NEAR_BOTTOM_BASE_PX + listTrailingSlackPx;
+  const atBottomLimit = SCROLL_AT_BOTTOM_THRESHOLD + listTrailingSlackPx;
+  const awayFromBottomLimit =
+    SCROLL_AWAY_FROM_BOTTOM_BASE_PX + listTrailingSlackPx;
+  const metricsRef = useRef({ offsetY: 0, contentHeight: 0, layoutHeight: 0 });
+  const contentHeightRef = useRef(0);
+  const autoScrollUsedRef = useRef(0);
+  const followArmedRef = useRef(true);
+  const pendingScrollPxRef = useRef(0);
+  const followRafRef = useRef(0);
+  const lastFollowFrameMsRef = useRef(0);
+  /** Content height before the next assistant-driven layout pass. */
+  const assistantLayoutBaselineRef = useRef<number | null>(null);
 
   const stopFollowLoop = useCallback(() => {
-    if (followRafRef.current !== null) {
+    if (followRafRef.current) {
       cancelAnimationFrame(followRafRef.current);
-      followRafRef.current = null;
+      followRafRef.current = 0;
     }
-    followTargetRef.current = null;
+    lastFollowFrameMsRef.current = 0;
   }, []);
 
-  const scrollListToOffset = useCallback(
-    (list: FlashListRef<ChatMessage>, offset: number) => {
-      const clamped = Math.max(0, offset);
-      list.scrollToOffset({
-        offset: clamped,
-        animated: false,
-        skipFirstItemOffset: false,
-      });
-      offsetYRef.current = clamped;
-    },
-    [],
-  );
-
-  /**
-   * Resolve the scroll offset we want while streaming. `null` means idle;
-   * during layout warmup we target the list bottom instead of a row anchor.
-   */
-  const computeStreamingFollowTarget = useCallback((): number | null => {
-    if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
-      return null;
-    }
-
-    const list = listRef.current;
-    if (!list || streamingIndex < 0) return null;
-
-    const viewportH = layoutHRef.current || list.getWindowSize().height || 0;
-    if (viewportH <= 0) return null;
-
-    const contentH = readContentHeight(list);
-    if (contentH <= 0) return null;
-    contentHRef.current = contentH;
-
-    const currentOffset = readScrollOffset(list);
-    const layout = list.getLayout(streamingIndex);
-    const measuredHeight = streamingRowHeightRef.current;
-    const rowHeight = Math.max(measuredHeight, layout?.height ?? 0);
-
-    if (!layout || rowHeight <= 0) {
-      return readMaxScrollOffset(list, viewportH, contentH);
-    }
-
-    const rowTop = layout.y;
-    const rowBottom = rowTop + rowHeight;
-
-    if (rowTop <= currentOffset + 2) {
-      lockedRef.current = true;
-      return null;
-    }
-
-    const desiredOffset = rowBottom - viewportH + FOLLOW_BREATHING_PX;
-    const pinnedTop = Math.max(0, rowTop - FOLLOW_TOP_PEEK_PX);
-    return Math.min(pinnedTop, desiredOffset);
-  }, [
-    readContentHeight,
-    readMaxScrollOffset,
-    readScrollOffset,
-    streamingIndex,
-  ]);
-
-  const stepFollowLoop = useCallback(() => {
-    followRafRef.current = null;
-
-    if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
-      followTargetRef.current = null;
-      return;
-    }
-
-    if (streaming) {
-      const freshTarget = computeStreamingFollowTarget();
-      if (freshTarget === null) {
-        followTargetRef.current = null;
-        return;
-      }
-      followTargetRef.current = freshTarget;
-    }
-
-    const target = followTargetRef.current;
-    if (target === null) return;
-
-    const list = listRef.current;
-    if (!list) return;
-
-    const viewportH = layoutHRef.current || list.getWindowSize().height || 0;
-    if (viewportH <= 0) return;
-
-    const contentH = readContentHeight(list);
-    if (contentH <= 0) return;
-
-    const maxScroll = readMaxScrollOffset(list, viewportH, contentH);
-    const clampedTarget = Math.max(0, Math.min(maxScroll, target));
-    const current = readScrollOffset(list);
-    const diff = clampedTarget - current;
-    const absDiff = Math.abs(diff);
-
-    if (absDiff < FOLLOW_MIN_STEP_PX) {
-      scrollListToOffset(list, clampedTarget);
-      if (!streaming) {
-        followTargetRef.current = null;
-        return;
-      }
-    } else if (absDiff > FOLLOW_HARD_SNAP_PX) {
-      scrollListToOffset(list, clampedTarget);
-    } else {
-      const factor = Math.min(
-        FOLLOW_LERP_FACTOR_MAX,
-        FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
-      );
-      const lerpStep = diff * factor;
-      const stepPx =
-        Math.abs(lerpStep) >= FOLLOW_MIN_STEP_PX
-          ? lerpStep
-          : Math.sign(diff) * FOLLOW_MIN_STEP_PX;
-      scrollListToOffset(list, current + stepPx);
-    }
-
-    followRafRef.current = requestAnimationFrame(stepFollowLoop);
-  }, [
-    computeStreamingFollowTarget,
-    readContentHeight,
-    readMaxScrollOffset,
-    readScrollOffset,
-    scrollListToOffset,
-    streaming,
-  ]);
-
-  const ensureFollowLoop = useCallback(() => {
-    if (followRafRef.current === null) {
-      followRafRef.current = requestAnimationFrame(stepFollowLoop);
-    }
-  }, [stepFollowLoop]);
-
-  const requestFollow = useCallback(
-    (options?: { allowBackward?: boolean }) => {
-      if (draggingRef.current || !pinnedRef.current || lockedRef.current) {
-        return;
-      }
-
-      const list = listRef.current;
-      if (!list) return;
-
-      if (streamingIndex < 0) {
-        stopFollowLoop();
-        requestAnimationFrame(() => list.scrollToEnd({ animated: true }));
-        return;
-      }
-
-      const target = computeStreamingFollowTarget();
-      if (target === null) {
-        stopFollowLoop();
-        return;
-      }
-
-      const current = readScrollOffset(list);
-      if (
-        !options?.allowBackward &&
-        target <= current + 0.5
-      ) {
-        return;
-      }
-
-      followTargetRef.current = target;
-      ensureFollowLoop();
-    },
-    [
-      computeStreamingFollowTarget,
-      ensureFollowLoop,
-      readScrollOffset,
-      stopFollowLoop,
-      streamingIndex,
-    ],
-  );
-
   useEffect(() => () => stopFollowLoop(), [stopFollowLoop]);
-
-  useEffect(() => {
-    if (!streaming) stopFollowLoop();
-  }, [streaming, stopFollowLoop]);
-
-  const onStreamingRowLayout = useCallback(
-    (height: number) => {
-      if (height <= 0) return;
-      const prev = streamingRowHeightRef.current;
-      streamingRowHeightRef.current = height;
-      if (height !== prev) requestFollow();
-    },
-    [requestFollow],
-  );
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-      offsetYRef.current = contentOffset.y;
-      layoutHRef.current = layoutMeasurement.height;
-      contentHRef.current = contentSize.height;
+      metricsRef.current = {
+        offsetY: contentOffset.y,
+        contentHeight: contentSize.height,
+        layoutHeight: layoutMeasurement.height,
+      };
+      contentHeightRef.current = contentSize.height;
 
-      // The "near bottom" threshold must account for the reserved tail
-      // spacer below the streaming row — otherwise the send-nudge parks the
-      // user just outside the flat threshold and auto-follow never engages.
-      const tailReserved = streaming ? TAIL_SPACER_PX : 0;
       const hasOverflow = contentSize.height > layoutMeasurement.height + 2;
       const distFromBottom = Math.max(
         0,
         contentSize.height -
           contentOffset.y -
-          layoutMeasurement.height -
-          tailReserved,
+          layoutMeasurement.height,
       );
-      const pinned =
-        !hasOverflow || distFromBottom <= SCROLL_AWAY_FROM_BOTTOM_THRESHOLD;
 
-      const wasPinned = pinnedRef.current;
-      pinnedRef.current = pinned;
-
-      if (!wasPinned && pinned && draggingRef.current) {
-        lockedRef.current = false;
+      // Re-arm the follow latch (not the per-reply budget!) when the user
+      // returns into the reading zone — the budget should only reset on real
+      // lifecycle events (new assistant message, manual scroll-to-bottom), or
+      // every auto-scroll tick would zero it out via the trailing-slack band.
+      if (distFromBottom <= atBottomLimit) {
+        followArmedRef.current = true;
+      } else if (distFromBottom > nearBottomLimit) {
+        followArmedRef.current = false;
+        pendingScrollPxRef.current = 0;
+        stopFollowLoop();
       }
 
-      setAwayFromBottom(hasOverflow && !pinned);
+      setAwayFromBottom(
+        hasOverflow && distFromBottom > awayFromBottomLimit,
+      );
     },
-    [streaming],
+    [atBottomLimit, awayFromBottomLimit, nearBottomLimit, stopFollowLoop],
   );
 
-  const onScrollBeginDrag = useCallback(() => {
-    draggingRef.current = true;
+  const resetAssistantAutoScroll = useCallback(() => {
+    autoScrollUsedRef.current = 0;
+    followArmedRef.current = true;
+    assistantLayoutBaselineRef.current = null;
+    pendingScrollPxRef.current = 0;
     stopFollowLoop();
   }, [stopFollowLoop]);
 
-  const onScrollEndDrag = useCallback(() => {
-    draggingRef.current = false;
+  /** Call when assistant text grows, before layout measures the new height. */
+  const prepareAssistantLayoutFollow = useCallback(() => {
+    assistantLayoutBaselineRef.current = contentHeightRef.current;
   }, []);
 
-  const handleContentChange = useCallback(() => {
-    requestFollow();
-  }, [requestFollow]);
+  const stepFollowLoop = useCallback((now: number) => {
+    followRafRef.current = 0;
 
-  useEffect(() => {
-    if (!streaming) return;
-    requestFollow();
-    ensureFollowLoop();
-  }, [ensureFollowLoop, streaming, streamingTextLen, requestFollow]);
+    if (!followArmedRef.current || pendingScrollPxRef.current <= 0) {
+      pendingScrollPxRef.current = 0;
+      return;
+    }
+
+    const { offsetY, layoutHeight } = metricsRef.current;
+    const contentHeight = contentHeightRef.current;
+    const distFromBottom = Math.max(
+      0,
+      contentHeight - offsetY - layoutHeight,
+    );
+    if (distFromBottom > nearBottomLimit) {
+      pendingScrollPxRef.current = 0;
+      return;
+    }
+
+    const budgetRemaining =
+      ASSISTANT_AUTO_SCROLL_MAX_PX - autoScrollUsedRef.current;
+    if (budgetRemaining <= 0) {
+      followArmedRef.current = false;
+      pendingScrollPxRef.current = 0;
+      return;
+    }
+
+    const lastMs = lastFollowFrameMsRef.current;
+    const elapsedMs =
+      lastMs === 0
+        ? 16
+        : Math.min(Math.max(0, now - lastMs), ASSISTANT_AUTO_SCROLL_MAX_FRAME_MS);
+    lastFollowFrameMsRef.current = now;
+
+    const adaptiveSpeed = Math.min(
+      ASSISTANT_AUTO_SCROLL_MAX_SPEED_PX_PER_S,
+      ASSISTANT_AUTO_SCROLL_BASE_SPEED_PX_PER_S +
+        pendingScrollPxRef.current * ASSISTANT_AUTO_SCROLL_SPEED_SCALE_PER_PX,
+    );
+    const maxStep = (adaptiveSpeed * elapsedMs) / 1000;
+    const step = Math.min(pendingScrollPxRef.current, budgetRemaining, maxStep);
+    if (step <= 0) {
+      followRafRef.current = requestAnimationFrame(stepFollowLoop);
+      return;
+    }
+
+    pendingScrollPxRef.current -= step;
+    autoScrollUsedRef.current += step;
+    if (autoScrollUsedRef.current >= ASSISTANT_AUTO_SCROLL_MAX_PX) {
+      followArmedRef.current = false;
+      pendingScrollPxRef.current = 0;
+    }
+
+    const maxOffset = Math.max(0, contentHeight - layoutHeight);
+    const newOffset = Math.min(offsetY + step, maxOffset);
+    metricsRef.current.offsetY = newOffset;
+    listRef.current?.scrollToOffset({ offset: newOffset, animated: false });
+
+    const nextDistFromBottom = Math.max(
+      0,
+      contentHeight - newOffset - layoutHeight,
+    );
+    setAwayFromBottom(
+      contentHeight > layoutHeight + 2 &&
+        nextDistFromBottom > awayFromBottomLimit,
+    );
+
+    if (pendingScrollPxRef.current > 0 && followArmedRef.current) {
+      followRafRef.current = requestAnimationFrame(stepFollowLoop);
+    }
+  }, [awayFromBottomLimit, nearBottomLimit]);
+
+  const followAssistantContentGrowth = useCallback(
+    (growthPx: number) => {
+      if (growthPx <= 0 || !followArmedRef.current) return;
+
+      const { offsetY, layoutHeight } = metricsRef.current;
+      const contentHeight = contentHeightRef.current;
+      const distFromBottom = Math.max(
+        0,
+        contentHeight - offsetY - layoutHeight,
+      );
+      if (distFromBottom > nearBottomLimit) return;
+
+      const budgetRemaining =
+        ASSISTANT_AUTO_SCROLL_MAX_PX -
+        autoScrollUsedRef.current -
+        pendingScrollPxRef.current;
+      if (budgetRemaining <= 0) {
+        followArmedRef.current = false;
+        return;
+      }
+
+      pendingScrollPxRef.current += Math.min(growthPx, budgetRemaining);
+      if (!followRafRef.current) {
+        followRafRef.current = requestAnimationFrame(stepFollowLoop);
+      }
+    },
+    [nearBottomLimit, stepFollowLoop],
+  );
+
+  const onListContentSizeChange = useCallback(
+    (_width: number, height: number) => {
+      contentHeightRef.current = height;
+      metricsRef.current.contentHeight = height;
+
+      const baseline = assistantLayoutBaselineRef.current;
+      if (baseline === null || height <= baseline) return;
+
+      const growth = height - baseline;
+      assistantLayoutBaselineRef.current = null;
+      followAssistantContentGrowth(growth);
+    },
+    [followAssistantContentGrowth],
+  );
 
   const scrollToBottom = useCallback(() => {
-    lockedRef.current = false;
-    stopFollowLoop();
+    resetAssistantAutoScroll();
     requestAnimationFrame(() =>
       listRef.current?.scrollToEnd({ animated: true }),
     );
-  }, [stopFollowLoop]);
+  }, [resetAssistantAutoScroll]);
 
-  const nudgeOnSend = useCallback(() => {
-    lockedRef.current = false;
-    requestAnimationFrame(() => {
-      const list = listRef.current;
-      if (!list) return;
-      const current =
-        typeof list.getAbsoluteLastScrollOffset === "function"
-          ? list.getAbsoluteLastScrollOffset()
-          : offsetYRef.current;
-      list.scrollToOffset({
-        offset: current + SEND_NUDGE_PX,
-        animated: true,
-        skipFirstItemOffset: false,
-      });
-    });
-  }, []);
+  /**
+   * After send, bump the viewport slightly when the user is already near the
+   * bottom — mirrors desktop `nudgeAfterSend` / `POST_SEND_USER_MESSAGE_BREATHING_PX`.
+   */
+  const nudgeAfterSend = useCallback(() => {
+    const { offsetY, layoutHeight } = metricsRef.current;
+    const contentHeight = contentHeightRef.current;
+    const distFromBottom = Math.max(
+      0,
+      contentHeight - offsetY - layoutHeight,
+    );
+    if (distFromBottom > nearBottomLimit) return;
+
+    followArmedRef.current = true;
+    autoScrollUsedRef.current = 0;
+    pendingScrollPxRef.current = 0;
+    stopFollowLoop();
+
+    const applyNudge = () => {
+      const metrics = metricsRef.current;
+      const height = contentHeightRef.current;
+      const dist = Math.max(
+        0,
+        height - metrics.offsetY - metrics.layoutHeight,
+      );
+      if (dist > nearBottomLimit) return;
+
+      const maxOffset = Math.max(0, height - metrics.layoutHeight);
+      const newOffset = Math.min(metrics.offsetY + POST_SEND_NUDGE_PX, maxOffset);
+      metricsRef.current.offsetY = newOffset;
+      listRef.current?.scrollToOffset({ offset: newOffset, animated: true });
+
+      const nextDist = Math.max(0, height - newOffset - metrics.layoutHeight);
+      setAwayFromBottom(
+        height > metrics.layoutHeight + 2 && nextDist > awayFromBottomLimit,
+      );
+    };
+
+    requestAnimationFrame(() => requestAnimationFrame(applyNudge));
+  }, [awayFromBottomLimit, nearBottomLimit, stopFollowLoop]);
 
   return {
     listRef,
     onScroll,
-    onScrollBeginDrag,
-    onScrollEndDrag,
-    handleContentChange,
+    onListContentSizeChange,
     scrollToBottom,
-    nudgeOnSend,
+    resetAssistantAutoScroll,
+    prepareAssistantLayoutFollow,
+    nudgeAfterSend,
     awayFromBottom,
-    streamingMessageId,
-    listExtraData: streaming ? streamingTextLen : 0,
-    onStreamingRowLayout,
   };
 }
 
@@ -594,11 +508,11 @@ type ChatStyles = ReturnType<typeof makeStyles>;
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
-  onStreamLayout,
+  colors,
 }: {
   item: ChatMessage;
   styles: ChatStyles;
-  onStreamLayout?: (height: number) => void;
+  colors: Colors;
 }) {
   if (item.role === "user") {
     const thumbs = item.thumbnailUris ?? [];
@@ -649,19 +563,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
       delayLongPress={350}
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
-      onLayout={
-        onStreamLayout
-          ? (e) => onStreamLayout(e.nativeEvent.layout.height)
-          : undefined
-      }
     >
-      <Text
-        style={styles.assistantText}
-        selectable
-        maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
-      >
-        {item.text}
-      </Text>
+      <AssistantMarkdown text={item.text} colors={colors} />
       {item.stopped ? (
         <Text
           style={styles.stoppedTag}
@@ -779,12 +682,15 @@ function ScrollToBottomFab({
   onPress,
   styles,
   colors,
+  bottomOffset,
 }: {
   visible: boolean;
   hasUnread: boolean;
   onPress: () => void;
   styles: ChatStyles;
   colors: Colors;
+  /** Distance in pt from the bottom of the viewport — sit just above the composer. */
+  bottomOffset?: number;
 }) {
   if (!visible) return null;
   return (
@@ -799,6 +705,7 @@ function ScrollToBottomFab({
       onPress={onPress}
       style={({ pressed }) => [
         styles.scrollToBottomFab,
+        bottomOffset !== undefined && { bottom: bottomOffset },
         pressed && styles.scrollToBottomFabPressed,
       ]}
     >
@@ -1131,7 +1038,7 @@ const makePlusMenuStyles = (colors: Colors) =>
 export type ChatPaneProps = {
   /** Visible message list (parent-owned). */
   messages: ChatMessage[];
-  /** True while a reply is streaming — controls tail spacer + scroll model. */
+  /** True while a reply is streaming — controls composer stop button. */
   streaming: boolean;
   /** Empty-state body. Rendered centered when there are no messages. */
   emptyContent: ReactNode;
@@ -1208,20 +1115,44 @@ export function ChatPane({
 
   const inputRef = useRef<TextInput>(null);
   const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
+  // The composer + working indicator overlay the bottom of the chat. We
+  // measure their actual height so the FlashList can reserve matching
+  // bottom inset, letting messages scroll under the composer (visible
+  // through transparent margins around the GlassView) instead of being
+  // clipped by it.
+  const [footerHeight, setFooterHeight] = useState(0);
+  const listTrailingSlackPx = EDGE_FADE + footerHeight;
 
-  const scroll = useChatScroll({ messages, streaming });
-
-  // After the viewport shrinks, keep the tail in view when the user was pinned.
-  useEffect(() => {
-    if (keyboardHeight <= 0 || scroll.awayFromBottom) return;
-    const id = requestAnimationFrame(() => scroll.scrollToBottom());
-    return () => cancelAnimationFrame(id);
-  }, [keyboardHeight, scroll.awayFromBottom, scroll.scrollToBottom]);
+  const assistantTextLenRef = useRef(0);
+  const assistantIdRef = useRef<string | null>(null);
+  const scroll = useChatScroll(listTrailingSlackPx);
 
   const [unread, setUnread] = useState(false);
   const prevLenRef = useRef(0);
   const wasStreamingRef = useRef(false);
   const spokenAssistantIdsRef = useRef<Set<string>>(new Set());
+
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage?.role === "assistant") {
+    const isNewAssistant = lastMessage.id !== assistantIdRef.current;
+    const grewText =
+      lastMessage.text.length > assistantTextLenRef.current;
+    if (isNewAssistant) {
+      scroll.resetAssistantAutoScroll();
+    }
+    if (isNewAssistant || grewText) {
+      scroll.prepareAssistantLayoutFollow();
+    }
+    assistantTextLenRef.current = lastMessage.text.length;
+    assistantIdRef.current = lastMessage.id;
+  } else {
+    assistantTextLenRef.current = 0;
+    assistantIdRef.current = null;
+  }
+
+  useEffect(() => {
+    if (streaming) scroll.resetAssistantAutoScroll();
+  }, [streaming, scroll.resetAssistantAutoScroll]);
 
   useEffect(() => {
     const grew = messages.length > prevLenRef.current;
@@ -1287,7 +1218,8 @@ export function ChatPane({
   const submit = useCallback(() => {
     tapMedium();
     onSubmit();
-  }, [onSubmit]);
+    scroll.nudgeAfterSend();
+  }, [onSubmit, scroll.nudgeAfterSend]);
 
   const dictationHeadersMemo = useMemo(
     () => dictationHeaders,
@@ -1438,37 +1370,16 @@ export function ChatPane({
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <FadeInMessage key={item.id}>
-        <ChatMessageRow
-          item={item}
-          styles={styles}
-          onStreamLayout={
-            item.id === scroll.streamingMessageId
-              ? scroll.onStreamingRowLayout
-              : undefined
-          }
-        />
+        <ChatMessageRow item={item} styles={styles} colors={colors} />
       </FadeInMessage>
     ),
-    [scroll.onStreamingRowLayout, scroll.streamingMessageId, styles],
+    [styles, colors],
   );
   const renderSeparator = useCallback(
     () => <View style={styles.itemSeparator} />,
     [styles],
   );
   const getItemType = useCallback((item: ChatMessage) => item.role, []);
-
-  // Send-time scroll nudge belongs in the parent so it lands ahead of the
-  // user message render. Expose via ref through the dictation handle? For
-  // simplicity, the parent re-renders on draft clear which we use as the
-  // signal to nudge — but we need a stable hook. Use a layout-effect that
-  // fires when messages grow with sending=true.
-  const prevSendingRef = useRef(streaming);
-  useEffect(() => {
-    if (streaming && !prevSendingRef.current) {
-      scroll.nudgeOnSend();
-    }
-    prevSendingRef.current = streaming;
-  }, [streaming, scroll]);
 
   const empty = messages.length === 0;
   const hasText = draft.trim().length > 0;
@@ -1499,8 +1410,13 @@ export function ChatPane({
   const showAttachmentStrip =
     enableAttachments && (attachments?.length ?? 0) > 0;
 
+  const listContentContainerStyle = useMemo(
+    () => [styles.list, { paddingBottom: EDGE_FADE + footerHeight }],
+    [styles.list, footerHeight],
+  );
+
   return (
-    <View style={[styles.screen, { paddingBottom: keyboardHeight }]}>
+    <View style={styles.screen}>
       <View style={styles.viewport}>
         {empty ? (
           <Pressable style={styles.emptyState} onPress={() => Keyboard.dismiss()}>
@@ -1511,20 +1427,14 @@ export function ChatPane({
             <FlashList
               ref={scroll.listRef}
               style={styles.messageList}
-              contentContainerStyle={styles.list}
+              contentContainerStyle={listContentContainerStyle}
               data={messages}
-              extraData={scroll.listExtraData}
               renderItem={renderItem}
               keyExtractor={keyExtractor}
               getItemType={getItemType}
               ItemSeparatorComponent={renderSeparator}
-              ListFooterComponent={
-                streaming ? <View style={styles.tailSpacer} /> : null
-              }
-              onContentSizeChange={scroll.handleContentChange}
               onScroll={scroll.onScroll}
-              onScrollBeginDrag={scroll.onScrollBeginDrag}
-              onScrollEndDrag={scroll.onScrollEndDrag}
+              onContentSizeChange={scroll.onListContentSizeChange}
               scrollEventThrottle={16}
               showsVerticalScrollIndicator={false}
               keyboardDismissMode="on-drag"
@@ -1536,13 +1446,19 @@ export function ChatPane({
               onPress={scroll.scrollToBottom}
               styles={styles}
               colors={colors}
+              bottomOffset={footerHeight + 8}
             />
           </>
         )}
       </View>
 
-      <WorkingIndicator active={streaming} />
-      <View style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}>
+      <View
+        style={[styles.footerOverlay, { paddingBottom: keyboardHeight }]}
+        onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}
+        pointerEvents="box-none"
+      >
+        <WorkingIndicator active={streaming} />
+        <View style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}>
         {showAttachmentStrip && (
           <View style={styles.attachmentStrip}>
             {(attachments ?? []).map((asset) => (
@@ -1719,6 +1635,7 @@ export function ChatPane({
             </View>
           )}
         </GlassView>
+        </View>
       </View>
       <PlusMenuPopover
         visible={Boolean(plusMenuAnchor) && plusMenuOptions.length > 0}
@@ -1737,7 +1654,18 @@ export function ChatPane({
 
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
-    screen: { flex: 1 },
+    screen: { flex: 1, position: "relative" },
+
+    // Anchored at the bottom of the screen, above the message list. The list
+    // gets matching bottom inset (via `footerHeight`) so content can still be
+    // scrolled fully into view; the transparent gutters around the composer
+    // shell let messages peek through as they pass underneath.
+    footerOverlay: {
+      bottom: 0,
+      left: 0,
+      position: "absolute",
+      right: 0,
+    },
 
     viewport: { flex: 1, minHeight: 0, position: "relative" },
     messageList: { flex: 1 },
@@ -1776,7 +1704,6 @@ const makeStyles = (colors: Colors) =>
       paddingTop: 80,
       paddingBottom: EDGE_FADE,
     },
-    tailSpacer: { height: TAIL_SPACER_PX },
     itemSeparator: { height: MESSAGE_LIST_GAP },
 
     emptyState: {
@@ -1844,8 +1771,8 @@ const makeStyles = (colors: Colors) =>
       flexShrink: 0,
       gap: 8,
       paddingBottom: 6,
-      paddingHorizontal: 16,
-      paddingTop: 4,
+      paddingHorizontal: 10,
+      paddingTop: 12,
     },
 
     attachmentStrip: {
