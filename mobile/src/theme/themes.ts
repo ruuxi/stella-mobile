@@ -191,8 +191,8 @@ export const themes: StellaTheme[] = [
   ),
 ];
 
-// Matches the desktop default (`nightowl`/Midnight).
-export const defaultThemeId = "nightowl";
+// Matches the desktop default (Pearl).
+export const defaultThemeId = "pearl";
 
 export function getThemeById(id: string): StellaTheme | undefined {
   return themes.find((t) => t.id === id);
