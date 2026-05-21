@@ -7,9 +7,8 @@ import {
   saveOfflineChatMessages,
 } from "../../src/lib/offline-chat-storage";
 import { postStream, postStreamAnonymous, StreamAbortError } from "../../src/lib/http";
-import { hasAiConsent, grantAiConsent } from "../../src/lib/ai-consent";
+import { hasAiConsent, requestAiConsent } from "../../src/lib/ai-consent";
 import { isGuest } from "../../src/lib/guest-mode";
-import { AiConsentModal } from "../../src/components/AiConsentModal";
 import { getOrCreateMobileDeviceId } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
@@ -46,8 +45,6 @@ export default function ChatScreen() {
     ImagePicker.ImagePickerAsset[]
   >([]);
   const [sending, setSending] = useState(false);
-  const [showConsentModal, setShowConsentModal] = useState(false);
-  const pendingSendRef = useRef<(() => void) | null>(null);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const modelSelection = useStellaModelSelection();
 
@@ -280,8 +277,7 @@ export default function ChatScreen() {
     if (!text && attachments.length === 0) return;
 
     if (!hasAiConsent()) {
-      pendingSendRef.current = () => send();
-      setShowConsentModal(true);
+      requestAiConsent();
       return;
     }
 
@@ -300,20 +296,6 @@ export default function ChatScreen() {
       setMessages((m) => m.filter((msg) => !cancelledIds.includes(msg.id)));
     }
     abortRef.current?.abort();
-  }, []);
-
-  const onConsentAccept = useCallback(() => {
-    void grantAiConsent().then(() => {
-      setShowConsentModal(false);
-      const pending = pendingSendRef.current;
-      pendingSendRef.current = null;
-      if (pending) pending();
-    });
-  }, []);
-
-  const onConsentDecline = useCallback(() => {
-    pendingSendRef.current = null;
-    setShowConsentModal(false);
   }, []);
 
   const styles = useMemo(
@@ -353,11 +335,6 @@ export default function ChatScreen() {
         onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
         dictationAnonymous={guest}
         dictationHeaders={dictationHeaders}
-      />
-      <AiConsentModal
-        visible={showConsentModal}
-        onAccept={onConsentAccept}
-        onDecline={onConsentDecline}
       />
     </View>
   );

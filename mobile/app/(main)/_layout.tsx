@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { Slot, usePathname, useRouter } from "expo-router";
+import { AiConsentModal } from "../../src/components/AiConsentModal";
+import {
+  grantAiConsent,
+  hasAiConsent,
+  subscribeAiConsentRequested,
+} from "../../src/lib/ai-consent";
+import { authClient } from "../../src/lib/auth-client";
+import { setGuestMode } from "../../src/lib/guest-mode";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -118,9 +126,36 @@ export default function MainLayout() {
   const pathname = usePathname();
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [consentVisible, setConsentVisible] = useState(false);
   const colors = useColors();
   const { isDark, gradientMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+
+  useEffect(() => {
+    if (!hasAiConsent()) {
+      setConsentVisible(true);
+    }
+    return subscribeAiConsentRequested(() => {
+      if (!hasAiConsent()) setConsentVisible(true);
+    });
+  }, []);
+
+  const onConsentAccept = useCallback(() => {
+    void grantAiConsent().then(() => setConsentVisible(false));
+  }, []);
+
+  const onConsentDecline = useCallback(() => {
+    setConsentVisible(false);
+    void (async () => {
+      try {
+        await authClient.signOut();
+      } catch {
+        /* ignore — guests have nothing to sign out of */
+      }
+      await setGuestMode(false);
+      router.replace("/login");
+    })();
+  }, [router]);
 
   // Reanimated shared value: 0 = closed, 1 = fully open
   const drawerProgress = useSharedValue(0);
@@ -337,6 +372,11 @@ export default function MainLayout() {
           </GestureDetector>
         </View>
       )}
+      <AiConsentModal
+        visible={consentVisible}
+        onAccept={onConsentAccept}
+        onDecline={onConsentDecline}
+      />
     </SafeAreaView>
   );
 }
