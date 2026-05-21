@@ -28,8 +28,12 @@ export function AiConsentModal({ visible, onAccept, onDecline }: Props) {
     <Modal
       visible={visible}
       animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onDecline}
+      presentationStyle="fullScreen"
+      onRequestClose={() => {
+        // Apple guideline 5.1.1: consent must be explicit and cannot be
+        // dismissed silently. Decline path is handled by the dedicated
+        // button below.
+      }}
     >
       <SafeAreaView style={styles.container}>
         <ScrollView
@@ -48,7 +52,8 @@ export function AiConsentModal({ visible, onAccept, onDecline }: Props) {
             <Text style={styles.body}>
               When you send a message, Stella transmits your message text,
               conversation history from the current session, and any images you
-              attach to an AI model for processing.
+              attach to an AI model for processing. If you use voice input, the
+              audio you record is also transmitted for transcription.
             </Text>
           </View>
 
@@ -61,8 +66,10 @@ export function AiConsentModal({ visible, onAccept, onDecline }: Props) {
               gateways, and then to upstream AI model providers such as{" "}
               <Text style={styles.bold}>Anthropic</Text>,{" "}
               <Text style={styles.bold}>OpenAI</Text>, or{" "}
-              <Text style={styles.bold}>Google</Text>. The exact provider path
-              depends on the model used for your request.
+              <Text style={styles.bold}>Google</Text>. Voice recordings are
+              transcribed by <Text style={styles.bold}>Mistral Voxtral</Text>{" "}
+              via the same gateways. The exact provider path depends on the
+              model used for your request.
             </Text>
           </View>
 
@@ -100,7 +107,7 @@ export function AiConsentModal({ visible, onAccept, onDecline }: Props) {
             <Text style={styles.acceptText}>I Understand & Agree</Text>
           </Pressable>
           <Pressable onPress={onDecline} style={styles.declineButton}>
-            <Text style={styles.declineText}>Not Now</Text>
+            <Text style={styles.declineText}>Don't Agree</Text>
           </Pressable>
         </View>
       </SafeAreaView>

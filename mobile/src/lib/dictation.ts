@@ -16,8 +16,9 @@ import {
   useAudioRecorderState,
 } from "expo-audio";
 import { File } from "expo-file-system";
-import { Alert, Platform } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
 import { postJson, postJsonAnonymous } from "./http";
+import { hasAiConsent, requestAiConsent } from "./ai-consent";
 
 const LEVEL_BUFFER_LENGTH = 64;
 /** Update tick for the waveform/timer. ~12 Hz feels right and matches desktop. */
@@ -120,12 +121,39 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const start = useCallback(async () => {
     if (status !== "idle") return;
+    // Apple 5.1.1(i): voice audio is sent to a third-party AI transcription
+    // service (Mistral Voxtral). Don't even start the recorder until the
+    // user has explicitly agreed to the data-sharing disclosure.
+    if (!hasAiConsent()) {
+      requestAiConsent();
+      return;
+    }
     try {
       const perm = await AudioModule.requestRecordingPermissionsAsync();
       if (!perm.granted) {
+        // If the user previously denied the system prompt, iOS will not
+        // show it again — the only way back is the system Settings app.
+        // Give them a one-tap path there so they can re-enable the mic
+        // without hunting through Settings manually.
+        const canAskAgain =
+          (perm as { canAskAgain?: boolean }).canAskAgain !== false;
         Alert.alert(
-          "Microphone",
-          "Allow Stella to access your microphone in Settings so you can dictate messages.",
+          "Microphone access needed",
+          canAskAgain
+            ? "Stella needs access to your microphone to record voice messages. You can allow it the next time iOS asks."
+            : "Stella needs access to your microphone to record voice messages. Turn it on in Settings → Stella → Microphone.",
+          canAskAgain
+            ? [{ text: "OK", style: "default" }]
+            : [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Open Settings",
+                  style: "default",
+                  onPress: () => {
+                    void Linking.openSettings();
+                  },
+                },
+              ],
         );
         return;
       }
