@@ -37,8 +37,14 @@ import { type Colors } from "../../src/theme/colors";
 import { useColors, useTheme } from "../../src/theme/theme-context";
 import { soften } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
+import {
+  MAIN_TAB_HREFS,
+  readMainTabFromPath,
+  saveLastMainTab,
+  type MainTabId,
+} from "../../src/lib/last-main-tab";
 
-type TabId = "chat" | "computer" | "account";
+type TabId = MainTabId;
 
 const TABS: {
   id: TabId;
@@ -58,9 +64,8 @@ const SIDEBAR_WIDTH = 320;
 const DRAWER_REVEAL = 232;
 
 function readActiveTab(pathname: string): TabId | null {
-  if (pathname === "/computer") return "computer";
-  if (pathname === "/account") return "account";
-  if (pathname === "/chat") return "chat";
+  const tab = readMainTabFromPath(pathname);
+  if (tab) return tab;
   // /stella (desktop WebView) is reached from the composer "+" menu and
   // doesn't correspond to a sidebar entry — leave nothing highlighted.
   return null;
@@ -162,6 +167,12 @@ export default function MainLayout() {
 
   const activeTab = readActiveTab(pathname);
 
+  useEffect(() => {
+    if (activeTab) {
+      void saveLastMainTab(activeTab);
+    }
+  }, [activeTab]);
+
   const openSidebar = () => {
     Keyboard.dismiss();
     setSidebarOpen(true);
@@ -174,7 +185,7 @@ export default function MainLayout() {
   };
 
   const navigate = (tab: TabId) => {
-    router.replace(TABS.find((t) => t.id === tab)!.href);
+    router.replace(MAIN_TAB_HREFS[tab]);
     closeSidebar();
   };
 

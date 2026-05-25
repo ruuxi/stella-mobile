@@ -22,6 +22,7 @@ installTextDefaults();
 import { loadGuestMode, isGuest, setGuestMode } from "../src/lib/guest-mode";
 import { loadAiConsent } from "../src/lib/ai-consent";
 import { loadNotificationsMuted } from "../src/lib/notifications-prefs";
+import { loadLastMainTabHref } from "../src/lib/last-main-tab";
 import {
   criticalStellaFontAssets,
   deferredStellaFontAssets,
@@ -46,13 +47,18 @@ function AuthenticatedLayout() {
   const router = useRouter();
   const pathname = usePathname();
   const [guestReady, setGuestReady] = useState(false);
+  const [initialMainHref, setInitialMainHref] = useState<string | null>(null);
 
   useEffect(() => {
     void Promise.all([
       loadGuestMode(),
       loadAiConsent(),
       loadNotificationsMuted(),
-    ]).then(() => setGuestReady(true));
+      loadLastMainTabHref(),
+    ]).then(([, , , href]) => {
+      setInitialMainHref(href);
+      setGuestReady(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -72,7 +78,7 @@ function AuthenticatedLayout() {
   }, []);
 
   useEffect(() => {
-    if (session.isPending || !guestReady) {
+    if (session.isPending || !guestReady || !initialMainHref) {
       return;
     }
 
@@ -94,7 +100,7 @@ function AuthenticatedLayout() {
       if (isGuest()) void setGuestMode(false);
       void registerForPushNotifications();
       if (onLogin || onIndex) {
-        router.replace("/chat");
+        router.replace(initialMainHref);
       }
       return;
     }
@@ -102,7 +108,7 @@ function AuthenticatedLayout() {
     if (isGuest()) {
       // Guests may open /login from Sign in buttons — don't bounce them back to chat.
       if (onIndex) {
-        router.replace("/chat");
+        router.replace(initialMainHref);
       }
       return;
     }
@@ -110,7 +116,7 @@ function AuthenticatedLayout() {
     if (onMain || onIndex) {
       router.replace("/login");
     }
-  }, [pathname, router, session.data, session.isPending, guestReady]);
+  }, [pathname, router, session.data, session.isPending, guestReady, initialMainHref]);
 
   return <RootStack />;
 }

@@ -29,6 +29,7 @@ import { useColors, useTheme } from "../../src/theme/theme-context";
 import { fadeHex } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
 import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "../../src/lib/legal-text";
+import { loadLastMainTabHref } from "../../src/lib/last-main-tab";
 
 type LegalDoc = "terms" | "privacy" | null;
 
@@ -72,7 +73,7 @@ export default function LoginScreen() {
     }).$store;
     store?.notify("$sessionSignal");
     await setGuestMode(true);
-    router.replace("/chat");
+    router.replace(await loadLastMainTabHref());
   };
 
   const sendMagicLink = async () => {
@@ -126,7 +127,7 @@ export default function LoginScreen() {
         return;
       }
 
-      router.replace("/chat");
+      router.replace(await loadLastMainTabHref());
     } catch (error) {
       setSubmitState({ type: "error", message: userFacingError(error) });
     }
@@ -183,7 +184,7 @@ export default function LoginScreen() {
           return;
         }
 
-        router.replace("/chat");
+        router.replace(await loadLastMainTabHref());
         return;
       }
 
@@ -203,7 +204,7 @@ export default function LoginScreen() {
         return;
       }
 
-      router.replace("/chat");
+      router.replace(await loadLastMainTabHref());
     } catch (error) {
       // User cancels surface as ERR_REQUEST_CANCELED — return silently.
       if (

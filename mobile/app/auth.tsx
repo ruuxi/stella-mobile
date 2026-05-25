@@ -6,6 +6,7 @@ import { authClient } from "../src/lib/auth-client";
 import { type Colors } from "../src/theme/colors";
 import { useColors } from "../src/theme/theme-context";
 import { fonts } from "../src/theme/fonts";
+import { loadLastMainTabHref } from "../src/lib/last-main-tab";
 
 type CallbackError = {
   message: string;
@@ -64,7 +65,7 @@ export default function AuthCallbackScreen() {
         });
 
         if (cancelled) return;
-        router.replace("/chat");
+        router.replace(await loadLastMainTabHref());
       } catch (error) {
         if (cancelled) return;
         setError(readCallbackError(error));
