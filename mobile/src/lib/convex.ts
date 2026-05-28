@@ -2,12 +2,9 @@ import { ConvexReactClient } from "convex/react";
 import { env } from "../config/env";
 
 /**
- * Singleton Convex React client for the mobile app. We don't run
- * additional Convex queries from the mobile right now — this exists
- * specifically so the chat surface can subscribe reactively to the
- * desktop's reply on `mobile_replies.watchDesktopReply` (driven by the
- * `mobile_chat.sendChat` action). Other mobile data still flows over
- * the existing HTTP routes via `src/lib/http.ts`.
+ * Singleton Convex React client for the mobile app. The app primarily uses
+ * HTTP routes plus Better Auth JWTs; the client stays mounted so Convex auth
+ * context is available for any reactive surfaces that are added later.
  *
  * Auth wiring is attached separately by `ConvexBetterAuthProvider`,
  * which calls `setAuth(...)` on this client with a JWT fetcher backed

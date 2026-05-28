@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  LayoutAnimation,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useRouter } from "expo-router";
-import { useAction, useMutation, useQuery } from "convex/react";
 import {
   loadComputerChatMessages,
   saveComputerChatMessages,
@@ -9,19 +15,17 @@ import {
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
-  getOrCreateMobileDeviceId,
   getPreferredPhoneAccess,
   type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
+import {
+  loadDesktopBridgeChatMessages,
+  normalizeDesktopChatMessageText,
+  sendDesktopBridgeChat,
+} from "../../src/lib/desktop-bridge-chat";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
 import { useStellaModelSelection } from "../../src/lib/model-selection";
-import {
-  acknowledgeDesktopReplyRef,
-  mobileCancelChatRef,
-  mobileSendChatRef,
-  watchDesktopReplyRef,
-} from "../../src/lib/convex-refs";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
@@ -114,18 +118,14 @@ function GuestComputerChat() {
   );
 }
 
-type PendingReply = {
-  requestId: string;
-  replyId: string;
-};
-
 type QueuedSend = {
   dispatchId: string;
   userMessageId: string;
   text: string;
 };
 
-const PENDING_REPLY_TIMEOUT_MS = 60_000;
+/** Cap on how many desktop messages we render after a sync. */
+const HISTORY_MESSAGE_LIMIT = 100;
 
 function AuthenticatedComputerChat() {
   const colors = useColors();
@@ -134,47 +134,30 @@ function AuthenticatedComputerChat() {
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const [paired, setPaired] = useState<boolean | null>(null);
-  const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(null);
+  const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(
+    null,
+  );
   const [pairSheetOpen, setPairSheetOpen] = useState(false);
-  const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
+  // One-shot desktop history sync state. `syncing` controls the spinner;
+  // `didMountSync` is a guard so the sync runs exactly once per tab landing
+  // once the bridge preconditions are ready.
+  const [syncing, setSyncing] = useState(false);
+  const didMountSyncRef = useRef(false);
   const modelSelection = useStellaModelSelection();
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const settledRequestIdsRef = useRef<Set<string>>(new Set());
   // Local follow-up queue (mirrors the chat screen). The Convex `sendChat`
-  // action can't be aborted mid-flight, so we hold queued messages here
-  // until the active reply settles, then dispatch the next one. Pressing
-  // Stop drops everything in the queue and marks the active reply as
-  // stopped — replies that still land from the desktop are acked and
-  // discarded so they don't appear after the fact.
+  // path is bypassed here: messages and history go straight to the paired
+  // desktop bridge, while Convex remains pairing/tunnel discovery only.
   const queueRef = useRef<QueuedSend[]>([]);
-  const stoppedRequestIdsRef = useRef<Set<string>>(new Set());
   const stoppedDispatchIdsRef = useRef<Set<string>>(new Set());
   const activeDispatchRef = useRef<{
     dispatchId: string;
     replyId: string;
+    abort: AbortController;
   } | null>(null);
-  // Forward declaration so `settlePendingReply` can call the latest
-  // `drainQueue` without depending on its identity (which would create a
-  // cycle through the `dispatch` callback's deps).
+  // Forward declaration so `dispatch` can call the latest `drainQueue`
+  // without depending on its identity (which would create a callback cycle).
   const drainQueueRef = useRef<(() => void) | null>(null);
-
-  const sendChat = useAction(mobileSendChatRef);
-  const cancelChat = useAction(mobileCancelChatRef);
-  const acknowledgeReply = useMutation(acknowledgeDesktopReplyRef);
-
-  // Subscribe to the active request's reply row. Convex tears the
-  // subscription down automatically once we clear pendingReply (after
-  // either a successful render or a timeout fallback).
-  const replyRow = useQuery(
-    watchDesktopReplyRef,
-    pendingReply ? { requestId: pendingReply.requestId } : "skip",
-  );
-
-  useEffect(() => {
-    void getOrCreateMobileDeviceId().then(setMobileDeviceId);
-  }, []);
 
   useEffect(() => {
     void getPreferredPhoneAccess().then((access) => {
@@ -185,7 +168,14 @@ function AuthenticatedComputerChat() {
 
   useEffect(() => {
     void loadComputerChatMessages().then((loaded) => {
-      setMessages(loaded);
+      setMessages(
+        loaded
+          .map((message) => ({
+            ...message,
+            text: normalizeDesktopChatMessageText(message.text),
+          }))
+          .filter((message) => message.text.length > 0),
+      );
       setStorageLoaded(true);
     });
   }, []);
@@ -195,55 +185,51 @@ function AuthenticatedComputerChat() {
     void saveComputerChatMessages(messages);
   }, [messages, storageLoaded]);
 
-  const clearPendingTimeout = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-  }, []);
-
-  const settlePendingReply = useCallback(
-    (pending: PendingReply, text: string, ok: boolean) => {
-      if (settledRequestIdsRef.current.has(pending.requestId)) return;
-      settledRequestIdsRef.current.add(pending.requestId);
-      clearPendingTimeout();
-      const wasStopped = stoppedRequestIdsRef.current.has(pending.requestId);
-      if (!wasStopped) {
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === pending.replyId ? { ...msg, text } : msg,
-          ),
-        );
-        if (ok) notifySuccess();
-      }
-      setSending(false);
-      setPendingReply(null);
-      // Best-effort: tell the backend to drop the relayed row now that
-      // the phone has it. Convex will TTL the row regardless, but
-      // acking keeps Convex storage at "seconds in the happy path".
-      void acknowledgeReply({ requestId: pending.requestId }).catch(() => {});
-      // Drain the next queued follow-up (no-op if the user pressed Stop,
-      // since Stop clears `queueRef` before this runs).
-      drainQueueRef.current?.();
-    },
-    [acknowledgeReply, clearPendingTimeout],
-  );
-
-  // Reactive render: when the desktop publishes its reply, the
-  // subscription delivers it here.
+  // ─── Desktop chat snapshot sync ────────────────────────────────────────
+  // On tab focus while idle, ask the desktop bridge for its current chat.
+  // The transcript comes from the paired desktop over the tunnel; Convex is
+  // used only to wake/discover/authorize the bridge.
   useEffect(() => {
-    if (!pendingReply || !replyRow || !replyRow.text) return;
-    settlePendingReply(pendingReply, replyRow.text, true);
-  }, [pendingReply, replyRow, settlePendingReply]);
+    if (didMountSyncRef.current) return;
+    if (!storageLoaded) return;
+    if (paired !== true) return;
+    if (!phoneAccess) return;
+    if (sending) return;
 
-  useEffect(() => clearPendingTimeout, [clearPendingTimeout]);
+    didMountSyncRef.current = true;
+    let cancelled = false;
+    setSyncing(true);
+    void (async () => {
+      try {
+        const next = await loadDesktopBridgeChatMessages(
+          phoneAccess,
+          HISTORY_MESSAGE_LIMIT,
+        );
+        if (cancelled) return;
+        setMessages(next);
+        setSyncing(false);
+      } catch {
+        if (cancelled) return;
+        setSyncing(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paired, phoneAccess, sending, storageLoaded]);
 
   const dispatch = useCallback(
     async (item: QueuedSend) => {
       // Promote the queued bubble (if any) out of the dimmed state and
       // add an empty assistant placeholder beside it.
       const replyId = createId();
-      activeDispatchRef.current = { dispatchId: item.dispatchId, replyId };
+      const abort = new AbortController();
+      activeDispatchRef.current = {
+        dispatchId: item.dispatchId,
+        replyId,
+        abort,
+      };
       setMessages((m) => [
         ...m.map((msg) =>
           msg.id === item.userMessageId ? { ...msg, queued: false } : msg,
@@ -251,7 +237,7 @@ function AuthenticatedComputerChat() {
         { id: replyId, role: "assistant", text: "" },
       ]);
 
-      if (!mobileDeviceId || !phoneAccess) {
+      if (!phoneAccess) {
         activeDispatchRef.current = null;
         setMessages((m) =>
           m.map((msg) =>
@@ -269,56 +255,26 @@ function AuthenticatedComputerChat() {
       }
 
       try {
-        const result = await sendChat({
+        const result = await sendDesktopBridgeChat({
+          access: phoneAccess,
           message: item.text,
-          mobileDeviceId,
-          desktopDeviceId: phoneAccess.desktopDeviceId,
-          pairSecret: phoneAccess.pairSecret,
           model: modelSelection.selectedModel,
+          signal: abort.signal,
         });
         if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
           activeDispatchRef.current = null;
-          if (result.kind === "pending") {
-            stoppedRequestIdsRef.current.add(result.requestId);
-            void acknowledgeReply({ requestId: result.requestId }).catch(
-              () => {},
-            );
-            void cancelChat({
-              requestId: result.requestId,
-              mobileDeviceId,
-              desktopDeviceId: phoneAccess.desktopDeviceId,
-              pairSecret: phoneAccess.pairSecret,
-            }).catch(() => {});
-          }
           setSending(false);
           return;
         }
-        if (result.kind === "sync" || result.kind === "unavailable") {
-          activeDispatchRef.current = null;
-          setMessages((m) =>
-            m.map((msg) =>
-              msg.id === replyId ? { ...msg, text: result.text } : msg,
-            ),
-          );
-          if (result.kind === "sync") notifySuccess();
-          setSending(false);
-          drainQueueRef.current?.();
-          return;
-        }
-
-        const pending: PendingReply = {
-          requestId: result.requestId,
-          replyId,
-        };
         activeDispatchRef.current = null;
-        setPendingReply(pending);
-        timeoutRef.current = setTimeout(() => {
-          settlePendingReply(
-            pending,
-            "Stella didn\u2019t reply in time. Try again in a moment.",
-            false,
-          );
-        }, PENDING_REPLY_TIMEOUT_MS);
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === replyId ? { ...msg, text: result.text } : msg,
+          ),
+        );
+        notifySuccess();
+        setSending(false);
+        drainQueueRef.current?.();
       } catch (e) {
         activeDispatchRef.current = null;
         if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
@@ -335,15 +291,7 @@ function AuthenticatedComputerChat() {
         drainQueueRef.current?.();
       }
     },
-    [
-      mobileDeviceId,
-      modelSelection.selectedModel,
-      phoneAccess,
-      sendChat,
-      acknowledgeReply,
-      cancelChat,
-      settlePendingReply,
-    ],
+    [modelSelection.selectedModel, phoneAccess],
   );
 
   const drainQueue = useCallback(() => {
@@ -359,7 +307,7 @@ function AuthenticatedComputerChat() {
 
   const send = useCallback(() => {
     const text = draft.trim();
-    if (!text || !mobileDeviceId || !phoneAccess) return;
+    if (!text || !phoneAccess) return;
 
     const userMessageId = createId();
     const userMsg: ChatMessage = {
@@ -383,54 +331,19 @@ function AuthenticatedComputerChat() {
       setSending(true);
       void dispatch(item);
     }
-  }, [
-    dispatch,
-    draft,
-    mobileDeviceId,
-    phoneAccess,
-    sending,
-  ]);
+  }, [dispatch, draft, phoneAccess, sending]);
 
   const stop = useCallback(() => {
-    // Remove every queued follow-up before signalling the active pending
-    // reply — settlePendingReply consults `stoppedRequestIdsRef` and the
-    // (now-empty) queue to decide whether to render the desktop reply or
-    // discard it. Any reply that still lands gets acked + dropped.
+    // Remove every queued follow-up before signalling the active bridge run.
     const cancelledIds = queueRef.current.map((q) => q.userMessageId);
     queueRef.current = [];
     if (cancelledIds.length > 0) {
       setMessages((m) => m.filter((msg) => !cancelledIds.includes(msg.id)));
     }
-    const active = pendingReply;
-    if (active) {
-      stoppedRequestIdsRef.current.add(active.requestId);
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === active.replyId
-            ? { ...msg, text: msg.text, stopped: true }
-            : msg,
-        ),
-      );
-      clearPendingTimeout();
-      setPendingReply(null);
-      // Pre-ack so any reply the desktop manages to publish before the
-      // server-side cancel lands doesn't render on the phone.
-      void acknowledgeReply({ requestId: active.requestId }).catch(() => {});
-      // True server-side cancellation: patches the `remote_turn_request`
-      // row to `cancelled` so the desktop's cancel subscription aborts
-      // the in-flight orchestrator run. Best-effort — if it fails the
-      // local pre-ack still suppresses any reply that eventually lands.
-      if (mobileDeviceId && phoneAccess) {
-        void cancelChat({
-          requestId: active.requestId,
-          mobileDeviceId,
-          desktopDeviceId: phoneAccess.desktopDeviceId,
-          pairSecret: phoneAccess.pairSecret,
-        }).catch(() => {});
-      }
-    } else if (activeDispatchRef.current) {
+    if (activeDispatchRef.current) {
       const activeDispatch = activeDispatchRef.current;
       stoppedDispatchIdsRef.current.add(activeDispatch.dispatchId);
+      activeDispatch.abort.abort();
       setMessages((m) =>
         m.map((msg) =>
           msg.id === activeDispatch.replyId
@@ -438,16 +351,10 @@ function AuthenticatedComputerChat() {
             : msg,
         ),
       );
+      activeDispatchRef.current = null;
     }
     setSending(false);
-  }, [
-    acknowledgeReply,
-    cancelChat,
-    clearPendingTimeout,
-    mobileDeviceId,
-    pendingReply,
-    phoneAccess,
-  ]);
+  }, []);
 
   const dictationHeaders = useMemo(() => undefined, []);
 
@@ -501,6 +408,23 @@ function AuthenticatedComputerChat() {
           fontFamily: fonts.sans.semiBold,
           fontSize: 15,
           letterSpacing: -0.3,
+        },
+        syncSurface: {
+          flex: 1,
+        },
+        // Spinner overlay shown while we wait for the desktop's current
+        // chat snapshot. Floats centered above the chat so the existing
+        // transcript (if any) stays visible behind it — replaces, doesn't
+        // hide.
+        syncOverlay: {
+          alignItems: "center",
+          bottom: 0,
+          justifyContent: "center",
+          left: 0,
+          pointerEvents: "none",
+          position: "absolute",
+          right: 0,
+          top: 0,
         },
       }),
     [colors],
@@ -559,31 +483,35 @@ function AuthenticatedComputerChat() {
   }
 
   const canSubmit =
-    draft.trim().length > 0 &&
-    paired === true &&
-    Boolean(mobileDeviceId) &&
-    Boolean(phoneAccess);
+    draft.trim().length > 0 && paired === true && Boolean(phoneAccess);
 
   return (
-    <ChatPane
-      messages={messages}
-      streaming={sending}
-      emptyContent={emptyContent}
-      draft={draft}
-      onChangeDraft={setDraft}
-      canSubmit={canSubmit}
-      onSubmit={send}
-      onStop={stop}
-      placeholder="Ask Stella to do something"
-      composerEnabled
-      enableAttachments={false}
-      onViewComputer={() => router.push("/stella")}
-      selectedModel={modelSelection.selectedModel}
-      selectedModelLabel={modelSelection.selectedModelLabel}
-      modelOptions={modelSelection.models}
-      onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
-      dictationAnonymous={false}
-      dictationHeaders={dictationHeaders}
-    />
+    <View style={styles.syncSurface}>
+      <ChatPane
+        messages={messages}
+        streaming={sending}
+        emptyContent={emptyContent}
+        draft={draft}
+        onChangeDraft={setDraft}
+        canSubmit={canSubmit}
+        onSubmit={send}
+        onStop={stop}
+        placeholder="Ask Stella to do something"
+        composerEnabled
+        enableAttachments={false}
+        onViewComputer={() => router.push("/stella")}
+        selectedModel={modelSelection.selectedModel}
+        selectedModelLabel={modelSelection.selectedModelLabel}
+        modelOptions={modelSelection.models}
+        onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
+        dictationAnonymous={false}
+        dictationHeaders={dictationHeaders}
+      />
+      {syncing ? (
+        <View style={styles.syncOverlay}>
+          <ActivityIndicator size="small" color={colors.textMuted} />
+        </View>
+      ) : null}
+    </View>
   );
 }
