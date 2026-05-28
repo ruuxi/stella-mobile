@@ -278,7 +278,12 @@ export default function MainLayout() {
   // In flat mode (or when a forcedMode theme like Pearl/Noir is active) we
   // paint the plain theme background, matching the desktop Gradient → Flat
   // setting. Soft mode keeps the diagonal accent ↔ background ↔ ok blob.
-  const gradient =
+  // Both fills are fully opaque so they double as the foreground's own
+  // surface — covering the parked sidebar while letting the chosen mode
+  // actually show through the app (a transparent foreground would leak the
+  // sidebar). Rendered as a function so the same backdrop can sit behind the
+  // shell (for the rounded-corner / drawer reveal) and inside the foreground.
+  const renderGradient = () =>
     gradientMode === "flat" ? (
       <View
         style={[StyleSheet.absoluteFill, { backgroundColor: colors.background }]}
@@ -286,9 +291,9 @@ export default function MainLayout() {
     ) : (
       <LinearGradient
         colors={[
-          soften(colors.accent, colors.background, isDark ? 0.06 : 0.09),
+          soften(colors.accent, colors.background, isDark ? 0.1 : 0.14),
           colors.background,
-          soften(colors.ok, colors.background, isDark ? 0.04 : 0.06),
+          soften(colors.ok, colors.background, isDark ? 0.07 : 0.1),
         ]}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
@@ -308,7 +313,7 @@ export default function MainLayout() {
 
       {wide ? (
         <>
-          {gradient}
+          {renderGradient()}
           <View style={styles.wideLayout}>
             <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
             <View style={styles.content}>
@@ -323,7 +328,7 @@ export default function MainLayout() {
           {/* Gradient backdrop — painted behind both sidebar and foreground
               so the inset/rounded foreground reveals the same continuous
               canvas through its curved corners (no contrasting bands). */}
-          {gradient}
+          {renderGradient()}
           {/* Sidebar parked underneath at the left edge. Always mounted,
               statically positioned, edge-to-edge vertically. The foreground
               (below) slides right to reveal it, so the menu reads as a layer
@@ -348,6 +353,11 @@ export default function MainLayout() {
               without ever obscuring the sidebar. */}
           <GestureDetector gesture={drawerPan}>
             <Animated.View style={[styles.foregroundLayer, foregroundStyle]}>
+              {/* The foreground carries the backdrop as its own opaque surface
+                  so soft/flat is actually visible in the app (and the parked
+                  sidebar stays hidden) instead of being covered by a flat
+                  fill. Clipped to the rounded corners via overflow:hidden. */}
+              {renderGradient()}
               <View style={[styles.topBar, { paddingTop: insets.top }]}>
                 <View style={styles.topBarSide}>
                   <Pressable

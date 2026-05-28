@@ -1,3 +1,5 @@
+import { soften } from "./oklch";
+
 export type Colors = {
   // Core backgrounds
   background: string;
@@ -42,78 +44,80 @@ export type Colors = {
   overlay: string;
 };
 
-/** Fallback light palette — used when no theme is loaded yet. */
+/** Fallback light palette — mirrors the Pearl theme (desktop default) so the
+ *  pre-load flash matches the real theme rather than an unrelated palette. */
 export const lightColors: Colors = {
-  background: "#f2f4f8",
-  backgroundWeak: "#e8ebf0",
-  backgroundStrong: "#f8f9fb",
-  surface: "#f8f9fb",
-  panel: "#dde1e6",
+  background: "#ffffff",
+  backgroundWeak: "#ffffff",
+  backgroundStrong: "#ffffff",
+  surface: "#ffffff",
+  panel: "#f6f6f6",
 
-  border: "#c1c7cd",
-  borderWeak: "#dde1e6",
-  borderStrong: "#878d96",
+  border: "#e8e8e8",
+  borderWeak: "#f0f0f0",
+  borderStrong: "#dcdcdc",
 
-  text: "#161616",
-  textMuted: "#4d5358",
+  text: "#111111",
+  textMuted: "#737373",
   textStrong: "#000000",
 
-  accent: "#0f62fe",
-  accentHover: "#0f62fe",
-  accentSoft: "#edf1fc",
+  accent: "#2563eb",
+  accentHover: "#2563eb",
+  accentSoft: soften("#2563eb", "#ffffff", 0.12),
   accentForeground: "#ffffff",
 
-  decorative: "#ee5396",
-  decorativeForeground: "#ffffff",
+  decorative: "#f2f2f2",
+  decorativeForeground: "#111111",
 
-  ok: "#42be65",
-  warning: "#f1c21b",
-  danger: "#da1e28",
-  info: "#4589ff",
+  ok: "#16a34a",
+  warning: "#a16207",
+  danger: "#dc2626",
+  info: "#2563eb",
 
-  card: "rgba(255, 255, 255, 0.9)",
-  cardForeground: "#161616",
-  muted: "#dde1e6",
-  mutedForeground: "#4d5358",
+  card: "#fbfbfb",
+  cardForeground: "#111111",
+  muted: "#f6f6f6",
+  mutedForeground: "#737373",
 
-  overlay: "#5a5a5a",
+  overlay: soften("#000000", "#ffffff", 0.38),
 };
 
-/** Fallback dark palette — used when no theme is loaded yet. */
+/** Fallback dark palette — mirrors the Noir theme so the pre-load flash matches
+ *  the real theme rather than an unrelated palette. */
 export const darkColors: Colors = {
-  background: "#161616",
-  backgroundWeak: "#1c1c1c",
-  backgroundStrong: "#0f0f0f",
-  surface: "#1c1c1c",
-  panel: "#262626",
+  background: "#0a0a0a",
+  backgroundWeak: "#050505",
+  backgroundStrong: "#141414",
+  surface: "#050505",
+  panel: "#181818",
 
-  border: "#393939",
-  borderWeak: "#262626",
-  borderStrong: "#525252",
+  border: "#242424",
+  borderWeak: "#171717",
+  borderStrong: "#333333",
 
-  text: "#f2f4f8",
-  textMuted: "#b8bfc7",
-  textStrong: "#ffffff",
+  text: "#f0eee8",
+  textMuted: "#9a958c",
+  textStrong: "#fbfbf7",
 
-  accent: "#78a9ff",
-  accentHover: "#78a9ff",
-  accentSoft: "#1d2636",
-  accentForeground: "#161616",
+  accent: "#f0eee8",
+  accentHover: "#f0eee8",
+  accentSoft: soften("#f0eee8", "#0a0a0a", 0.12),
+  accentForeground: "#0a0a0a",
 
-  decorative: "#ff7eb6",
-  decorativeForeground: "#161616",
+  decorative: "#202020",
+  decorativeForeground: "#f0eee8",
 
-  ok: "#42be65",
-  warning: "#f1c21b",
-  danger: "#ff8389",
-  info: "#4589ff",
+  ok: "#4ade80",
+  warning: "#fbbf24",
+  danger: "#f87171",
+  info: "#60a5fa",
 
-  card: "rgba(38, 38, 38, 0.9)",
-  cardForeground: "#f2f4f8",
-  muted: "#262626",
-  mutedForeground: "#b8bfc7",
+  card: "#111111",
+  cardForeground: "#f0eee8",
+  muted: "#181818",
+  mutedForeground: "#9a958c",
 
-  overlay: "#1a1a1a",
+  overlay: soften("#fbfbf7", "#0a0a0a", 0.38),
 };
 
 /** @deprecated Use `useColors()` from theme-context instead. */

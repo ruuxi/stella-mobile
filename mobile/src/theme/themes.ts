@@ -106,22 +106,22 @@ const pearlPalette: Src = {
   primary: "#2563eb", primaryForeground: "#ffffff",
   success: "#16a34a", warning: "#a16207", error: "#dc2626", info: "#2563eb",
   interactive: "#2563eb",
-  border: "#ededed", borderWeak: "#f5f5f5", borderStrong: "#dcdcdc",
-  card: "rgba(255, 255, 255, 0.96)", cardForeground: "#111111",
-  muted: "#f7f7f7", mutedForeground: "#737373",
-  accent: "#f4f4f4", accentForeground: "#111111",
+  border: "#e8e8e8", borderWeak: "#f0f0f0", borderStrong: "#dcdcdc",
+  card: "#fbfbfb", cardForeground: "#111111",
+  muted: "#f6f6f6", mutedForeground: "#737373",
+  accent: "#f2f2f2", accentForeground: "#111111",
 };
 
 const noirPalette: Src = {
-  background: "#161513", backgroundWeak: "#11100f", backgroundStrong: "#211f1c",
-  foreground: "#f0eee8", foregroundWeak: "#a09a90", foregroundStrong: "#fbfbf7",
-  primary: "#f0eee8", primaryForeground: "#161513",
+  background: "#0a0a0a", backgroundWeak: "#050505", backgroundStrong: "#141414",
+  foreground: "#f0eee8", foregroundWeak: "#9a958c", foregroundStrong: "#fbfbf7",
+  primary: "#f0eee8", primaryForeground: "#0a0a0a",
   success: "#4ade80", warning: "#fbbf24", error: "#f87171", info: "#60a5fa",
   interactive: "#f0eee8",
-  border: "#343029", borderWeak: "#26231f", borderStrong: "#4a443a",
-  card: "rgba(33, 31, 28, 0.94)", cardForeground: "#f0eee8",
-  muted: "#24211d", mutedForeground: "#a09a90",
-  accent: "#2d2924", accentForeground: "#f0eee8",
+  border: "#242424", borderWeak: "#171717", borderStrong: "#333333",
+  card: "#111111", cardForeground: "#f0eee8",
+  muted: "#181818", mutedForeground: "#9a958c",
+  accent: "#202020", accentForeground: "#f0eee8",
 };
 
 export const themes: StellaTheme[] = [
