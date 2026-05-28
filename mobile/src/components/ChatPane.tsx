@@ -1056,6 +1056,12 @@ export type ChatPaneProps = {
   streaming: boolean;
   /** Empty-state body. Rendered centered when there are no messages. */
   emptyContent: ReactNode;
+  /**
+   * True while history is still hydrating (e.g. AsyncStorage load on mount or
+   * an unknown pairing state). Suppresses the empty state so it doesn't flash
+   * during tab transitions before the real messages arrive.
+   */
+  historyLoading?: boolean;
 
   /** Composer input value. */
   draft: string;
@@ -1105,6 +1111,7 @@ export function ChatPane({
   messages,
   streaming,
   emptyContent,
+  historyLoading = false,
   draft,
   onChangeDraft,
   composerEnabled = true,
@@ -1173,21 +1180,6 @@ export function ChatPane({
   useEffect(() => {
     if (streaming) scroll.resetAssistantAutoScroll();
   }, [streaming, scroll.resetAssistantAutoScroll]);
-
-  // Anchor at the bottom on first load so we open into the latest message
-  // instead of the top of the history. Wait two frames so the list has
-  // laid out and the content size is real before jumping.
-  const didInitialScrollRef = useRef(false);
-  useEffect(() => {
-    if (didInitialScrollRef.current) return;
-    if (messages.length === 0) return;
-    didInitialScrollRef.current = true;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scroll.listRef.current?.scrollToEnd({ animated: false });
-      });
-    });
-  }, [messages.length, scroll.listRef]);
 
   // When the keyboard rises while the user is at/near the bottom, pull the
   // chat up so the keyboard doesn't cover the latest messages. If the user
@@ -1531,7 +1523,11 @@ export function ChatPane({
   return (
     <View style={styles.screen}>
       <View style={styles.viewport}>
-        {empty ? (
+        {historyLoading ? (
+          // Hold a stable blank surface while history hydrates so the empty
+          // state never flashes during a tab transition.
+          <View style={styles.emptyState} />
+        ) : empty ? (
           <Pressable style={styles.emptyState} onPress={() => Keyboard.dismiss()}>
             {emptyContent}
           </Pressable>
@@ -1552,11 +1548,22 @@ export function ChatPane({
               showsVerticalScrollIndicator={false}
               keyboardDismissMode="on-drag"
               fadingEdgeLength={EDGE_FADE}
-              initialScrollIndex={
-                didInitialScrollRef.current
-                  ? undefined
-                  : Math.max(0, messages.length - 1)
-              }
+              // Open at the latest message every time the tab mounts, instead
+              // of landing at the top of history.
+              initialScrollAtEnd
+              alignItemsAtEnd
+              // Keep the visible message anchored when the data array changes
+              // (e.g. messages syncing in from the desktop) so the list never
+              // snaps back to the top.
+              maintainVisibleContentPosition
+              // Pin to the tail only when new/synced messages arrive while the
+              // user is already near the bottom. Scoped to data changes so it
+              // doesn't fight the custom budgeted streaming-follow loop, which
+              // owns item-layout/size growth.
+              maintainScrollAtEnd={{
+                animated: false,
+                on: { dataChange: true, itemLayout: false, layout: false },
+              }}
             />
             {/* Top taper — fades the list into the surface at the top edge so
                 messages scrolling under the top bar dissolve instead of
@@ -1586,7 +1593,7 @@ export function ChatPane({
             style={[
               styles.floatingMenuButton,
               {
-                bottom: footerHeight + 8,
+                bottom: footerHeight - 20,
                 opacity: floatingAnim,
                 transform: [
                   {

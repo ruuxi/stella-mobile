@@ -491,6 +491,7 @@ function AuthenticatedComputerChat() {
         messages={messages}
         streaming={sending}
         emptyContent={emptyContent}
+        historyLoading={!storageLoaded || paired === null}
         draft={draft}
         onChangeDraft={setDraft}
         canSubmit={canSubmit}

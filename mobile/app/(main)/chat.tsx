@@ -314,6 +314,7 @@ export default function ChatScreen() {
         messages={messages}
         streaming={sending}
         emptyContent={<Text style={styles.emptyText}>Ask Stella anything</Text>}
+        historyLoading={!storageLoaded}
         draft={draft}
         onChangeDraft={setDraft}
         canSubmit={canSubmit}
