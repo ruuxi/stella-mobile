@@ -13,6 +13,7 @@ import {
   Animated,
   Dimensions,
   Keyboard,
+  LayoutChangeEvent,
   LayoutAnimation,
   Modal,
   NativeScrollEvent,
@@ -99,26 +100,17 @@ const LAYOUT_SPRING = {
 const SCROLL_NEAR_BOTTOM_BASE_PX = 96;
 /** Base distance before showing the scroll-to-bottom FAB (plus trailing slack). */
 const SCROLL_AWAY_FROM_BOTTOM_BASE_PX = 96;
-/**
- * Max cumulative auto-scroll per assistant reply while near the bottom.
- * Mirrors desktop follow stopping once the streaming row reaches the top.
- */
-const ASSISTANT_AUTO_SCROLL_MAX_PX = 400;
-/**
- * Adaptive auto-follow speed: base feels smooth for steady streams, scales up
- * with how far behind we are so bursty token output catches up without snapping.
- *
- *   speed = clamp(base + pending * scale, base, max)
- */
-const ASSISTANT_AUTO_SCROLL_BASE_SPEED_PX_PER_S = 400;
-const ASSISTANT_AUTO_SCROLL_MAX_SPEED_PX_PER_S = 1400;
-const ASSISTANT_AUTO_SCROLL_SPEED_SCALE_PER_PX = 4;
 /** Re-arm capped auto-follow once the user scrolls back to the true bottom. */
 const SCROLL_AT_BOTTOM_THRESHOLD = 8;
-/** Cap per-frame delta so a long hitch does not teleport the list. */
-const ASSISTANT_AUTO_SCROLL_MAX_FRAME_MS = 48;
 /** Small upward nudge after send so the user bubble clears room for the reply. */
 const POST_SEND_NUDGE_PX = 128;
+/** Desktop-matched stream-follow lerp: smooth for normal deltas, quick for bursts. */
+const FOLLOW_LERP_FACTOR_BASE = 0.3;
+const FOLLOW_LERP_FACTOR_MAX = 0.65;
+const FOLLOW_LERP_FACTOR_SCALE = 0.005;
+const FOLLOW_HARD_SNAP_PX = 240;
+const FOLLOW_MIN_STEP_PX = 0.5;
+const FOLLOW_TOP_PEEK_PX = 56;
 
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
@@ -194,11 +186,10 @@ function useChatScroll(listTrailingSlackPx: number) {
     SCROLL_AWAY_FROM_BOTTOM_BASE_PX + listTrailingSlackPx;
   const metricsRef = useRef({ offsetY: 0, contentHeight: 0, layoutHeight: 0 });
   const contentHeightRef = useRef(0);
-  const autoScrollUsedRef = useRef(0);
   const followArmedRef = useRef(true);
-  const pendingScrollPxRef = useRef(0);
+  const followTargetOffsetRef = useRef<number | null>(null);
   const followRafRef = useRef(0);
-  const lastFollowFrameMsRef = useRef(0);
+  const streamingAssistantHeightRef = useRef(0);
   /** Content height before the next assistant-driven layout pass. */
   const assistantLayoutBaselineRef = useRef<number | null>(null);
 
@@ -207,7 +198,7 @@ function useChatScroll(listTrailingSlackPx: number) {
       cancelAnimationFrame(followRafRef.current);
       followRafRef.current = 0;
     }
-    lastFollowFrameMsRef.current = 0;
+    followTargetOffsetRef.current = null;
   }, []);
 
   useEffect(() => () => stopFollowLoop(), [stopFollowLoop]);
@@ -238,7 +229,6 @@ function useChatScroll(listTrailingSlackPx: number) {
         followArmedRef.current = true;
       } else if (distFromBottom > nearBottomLimit) {
         followArmedRef.current = false;
-        pendingScrollPxRef.current = 0;
         stopFollowLoop();
       }
 
@@ -250,10 +240,8 @@ function useChatScroll(listTrailingSlackPx: number) {
   );
 
   const resetAssistantAutoScroll = useCallback(() => {
-    autoScrollUsedRef.current = 0;
     followArmedRef.current = true;
     assistantLayoutBaselineRef.current = null;
-    pendingScrollPxRef.current = 0;
     stopFollowLoop();
   }, [stopFollowLoop]);
 
@@ -263,10 +251,12 @@ function useChatScroll(listTrailingSlackPx: number) {
   }, []);
 
   const stepFollowLoop = useCallback((now: number) => {
+    void now;
     followRafRef.current = 0;
 
-    if (!followArmedRef.current || pendingScrollPxRef.current <= 0) {
-      pendingScrollPxRef.current = 0;
+    const rawTarget = followTargetOffsetRef.current;
+    if (!followArmedRef.current || rawTarget === null) {
+      followTargetOffsetRef.current = null;
       return;
     }
 
@@ -277,46 +267,36 @@ function useChatScroll(listTrailingSlackPx: number) {
       contentHeight - offsetY - layoutHeight,
     );
     if (distFromBottom > nearBottomLimit) {
-      pendingScrollPxRef.current = 0;
+      followTargetOffsetRef.current = null;
       return;
-    }
-
-    const budgetRemaining =
-      ASSISTANT_AUTO_SCROLL_MAX_PX - autoScrollUsedRef.current;
-    if (budgetRemaining <= 0) {
-      followArmedRef.current = false;
-      pendingScrollPxRef.current = 0;
-      return;
-    }
-
-    const lastMs = lastFollowFrameMsRef.current;
-    const elapsedMs =
-      lastMs === 0
-        ? 16
-        : Math.min(Math.max(0, now - lastMs), ASSISTANT_AUTO_SCROLL_MAX_FRAME_MS);
-    lastFollowFrameMsRef.current = now;
-
-    const adaptiveSpeed = Math.min(
-      ASSISTANT_AUTO_SCROLL_MAX_SPEED_PX_PER_S,
-      ASSISTANT_AUTO_SCROLL_BASE_SPEED_PX_PER_S +
-        pendingScrollPxRef.current * ASSISTANT_AUTO_SCROLL_SPEED_SCALE_PER_PX,
-    );
-    const maxStep = (adaptiveSpeed * elapsedMs) / 1000;
-    const step = Math.min(pendingScrollPxRef.current, budgetRemaining, maxStep);
-    if (step <= 0) {
-      followRafRef.current = requestAnimationFrame(stepFollowLoop);
-      return;
-    }
-
-    pendingScrollPxRef.current -= step;
-    autoScrollUsedRef.current += step;
-    if (autoScrollUsedRef.current >= ASSISTANT_AUTO_SCROLL_MAX_PX) {
-      followArmedRef.current = false;
-      pendingScrollPxRef.current = 0;
     }
 
     const maxOffset = Math.max(0, contentHeight - layoutHeight);
-    const newOffset = Math.min(offsetY + step, maxOffset);
+    const target = Math.max(0, Math.min(maxOffset, rawTarget));
+    const diff = target - offsetY;
+    const absDiff = Math.abs(diff);
+
+    if (absDiff < FOLLOW_MIN_STEP_PX) {
+      metricsRef.current.offsetY = target;
+      listRef.current?.scrollToOffset({ offset: target, animated: false });
+      followTargetOffsetRef.current = null;
+      return;
+    }
+
+    const newOffset =
+      absDiff > FOLLOW_HARD_SNAP_PX
+        ? target
+        : offsetY +
+          (Math.abs(diff * Math.min(
+            FOLLOW_LERP_FACTOR_MAX,
+            FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
+          )) >= FOLLOW_MIN_STEP_PX
+            ? diff * Math.min(
+                FOLLOW_LERP_FACTOR_MAX,
+                FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
+              )
+            : Math.sign(diff) * FOLLOW_MIN_STEP_PX);
+
     metricsRef.current.offsetY = newOffset;
     listRef.current?.scrollToOffset({ offset: newOffset, animated: false });
 
@@ -329,14 +309,19 @@ function useChatScroll(listTrailingSlackPx: number) {
         nextDistFromBottom > awayFromBottomLimit,
     );
 
-    if (pendingScrollPxRef.current > 0 && followArmedRef.current) {
+    if (newOffset === target || absDiff > FOLLOW_HARD_SNAP_PX) {
+      followTargetOffsetRef.current = null;
+      return;
+    }
+
+    if (followTargetOffsetRef.current !== null && followArmedRef.current) {
       followRafRef.current = requestAnimationFrame(stepFollowLoop);
     }
   }, [awayFromBottomLimit, nearBottomLimit]);
 
-  const followAssistantContentGrowth = useCallback(
-    (growthPx: number) => {
-      if (growthPx <= 0 || !followArmedRef.current) return;
+  const setFollowTarget = useCallback(
+    (target: number) => {
+      if (!followArmedRef.current) return;
 
       const { offsetY, layoutHeight } = metricsRef.current;
       const contentHeight = contentHeightRef.current;
@@ -346,21 +331,39 @@ function useChatScroll(listTrailingSlackPx: number) {
       );
       if (distFromBottom > nearBottomLimit) return;
 
-      const budgetRemaining =
-        ASSISTANT_AUTO_SCROLL_MAX_PX -
-        autoScrollUsedRef.current -
-        pendingScrollPxRef.current;
-      if (budgetRemaining <= 0) {
-        followArmedRef.current = false;
-        return;
-      }
+      const maxOffset = Math.max(0, contentHeight - layoutHeight);
+      const clamped = Math.max(0, Math.min(maxOffset, target));
+      if (clamped <= offsetY + 0.5) return;
 
-      pendingScrollPxRef.current += Math.min(growthPx, budgetRemaining);
+      followTargetOffsetRef.current = clamped;
       if (!followRafRef.current) {
         followRafRef.current = requestAnimationFrame(stepFollowLoop);
       }
     },
     [nearBottomLimit, stepFollowLoop],
+  );
+
+  const followActiveAssistantRow = useCallback(() => {
+    const assistantHeight = streamingAssistantHeightRef.current;
+    if (assistantHeight <= 0) return;
+
+    const { layoutHeight } = metricsRef.current;
+    if (layoutHeight <= 0) return;
+
+    const contentHeight = contentHeightRef.current;
+    const rowBottom = Math.max(0, contentHeight - listTrailingSlackPx);
+    const rowTop = Math.max(0, rowBottom - assistantHeight);
+    const desiredScrollTop = Math.max(0, contentHeight - layoutHeight);
+    const pinnedTop = Math.max(0, rowTop - FOLLOW_TOP_PEEK_PX);
+    setFollowTarget(Math.min(pinnedTop, desiredScrollTop));
+  }, [listTrailingSlackPx, setFollowTarget]);
+
+  const onStreamingAssistantLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      streamingAssistantHeightRef.current = event.nativeEvent.layout.height;
+      followActiveAssistantRow();
+    },
+    [followActiveAssistantRow],
   );
 
   const onListContentSizeChange = useCallback(
@@ -369,13 +372,19 @@ function useChatScroll(listTrailingSlackPx: number) {
       metricsRef.current.contentHeight = height;
 
       const baseline = assistantLayoutBaselineRef.current;
-      if (baseline === null || height <= baseline) return;
+      if (baseline === null || height <= baseline) {
+        followActiveAssistantRow();
+        return;
+      }
 
-      const growth = height - baseline;
       assistantLayoutBaselineRef.current = null;
-      followAssistantContentGrowth(growth);
+      if (streamingAssistantHeightRef.current > 0) {
+        followActiveAssistantRow();
+      } else {
+        setFollowTarget(metricsRef.current.offsetY + height - baseline);
+      }
     },
-    [followAssistantContentGrowth],
+    [followActiveAssistantRow, setFollowTarget],
   );
 
   const scrollToBottom = useCallback(() => {
@@ -399,8 +408,6 @@ function useChatScroll(listTrailingSlackPx: number) {
     if (distFromBottom > nearBottomLimit) return;
 
     followArmedRef.current = true;
-    autoScrollUsedRef.current = 0;
-    pendingScrollPxRef.current = 0;
     stopFollowLoop();
 
     const applyNudge = () => {
@@ -430,9 +437,11 @@ function useChatScroll(listTrailingSlackPx: number) {
     listRef,
     onScroll,
     onListContentSizeChange,
+    onStreamingAssistantLayout,
     scrollToBottom,
     resetAssistantAutoScroll,
     prepareAssistantLayoutFollow,
+    releaseFollow: stopFollowLoop,
     nudgeAfterSend,
     awayFromBottom,
   };
@@ -795,13 +804,29 @@ function PlusMenuPopover({
     height: number;
   } | null>(null);
   const [submenuStack, setSubmenuStack] = useState<PlusMenuLevel[]>([]);
+  // Snappy entrance: the menu springs up from the anchor once it has been
+  // measured, instead of the slow flat fade of the RN Modal.
+  const anim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (!visible) {
       setMenuLayout(null);
       setSubmenuStack([]);
+      anim.setValue(0);
     }
-  }, [visible]);
+  }, [visible, anim]);
+
+  useEffect(() => {
+    if (visible && menuLayout) {
+      Animated.spring(anim, {
+        toValue: 1,
+        damping: 24,
+        stiffness: 520,
+        mass: 0.5,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [visible, menuLayout, anim]);
 
   const activeLevel = submenuStack[submenuStack.length - 1];
   const visibleOptions = activeLevel?.options ?? options;
@@ -859,16 +884,24 @@ function PlusMenuPopover({
   // above the anchor.
   const menuHeight = measured?.height ?? 0;
   const dropUpTop = anchor.y - menuHeight - PLUS_MENU_GAP;
-  const top =
-    measured && dropUpTop < PLUS_MENU_EDGE_PADDING
-      ? anchor.y + anchor.height + PLUS_MENU_GAP
-      : dropUpTop;
+  const isDropDown = Boolean(measured) && dropUpTop < PLUS_MENU_EDGE_PADDING;
+  const top = isDropDown ? anchor.y + anchor.height + PLUS_MENU_GAP : dropUpTop;
+  // Emerge from the anchor: a drop-up menu rises into place, a drop-down
+  // menu settles down into place.
+  const enterTranslateY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [isDropDown ? -8 : 8, 0],
+  });
+  const enterScale = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
 
   return (
     <Modal
       transparent
       visible={visible}
-      animationType="fade"
+      animationType="none"
       onRequestClose={handleRequestClose}
       statusBarTranslucent
     >
@@ -877,7 +910,7 @@ function PlusMenuPopover({
         onPress={handleRequestClose}
         accessibilityLabel="Dismiss menu"
       >
-        <View
+        <Animated.View
           // Stop the backdrop's onPress from firing when the user taps
           // inside the menu itself.
           onStartShouldSetResponder={() => true}
@@ -890,8 +923,9 @@ function PlusMenuPopover({
             {
               left,
               minWidth: PLUS_MENU_MIN_WIDTH,
-              opacity: measured ? 1 : 0,
+              opacity: measured ? anim : 0,
               top: measured ? top : anchor.y - PLUS_MENU_GAP,
+              transform: [{ translateY: enterTranslateY }, { scale: enterScale }],
             },
           ]}
         >
@@ -972,7 +1006,7 @@ function PlusMenuPopover({
               </Pressable>
             );
           })}
-        </View>
+        </Animated.View>
       </Pressable>
     </Modal>
   );
@@ -994,10 +1028,10 @@ const makePlusMenuStyles = (colors: Colors) =>
       paddingVertical: 6,
       position: "absolute",
       shadowColor: "#000",
-      shadowOffset: { width: 0, height: 12 },
-      shadowOpacity: 0.18,
-      shadowRadius: 24,
-      elevation: 12,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 6,
+      elevation: 2,
     },
     menuItem: {
       alignItems: "center",
@@ -1620,7 +1654,7 @@ export function ChatPane({
                 <Icon
                   name="settings"
                   size={19}
-                  color={colors.accent}
+                  color={colors.textMuted}
                   weight="semibold"
                 />
               </GlassView>

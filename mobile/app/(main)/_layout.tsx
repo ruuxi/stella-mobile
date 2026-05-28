@@ -43,6 +43,10 @@ import {
   saveLastMainTab,
   type MainTabId,
 } from "../../src/lib/last-main-tab";
+import {
+  hasSeenComputerHint,
+  markComputerHintSeen,
+} from "../../src/lib/computer-hint";
 
 type TabId = MainTabId;
 
@@ -131,6 +135,9 @@ export default function MainLayout() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [consentVisible, setConsentVisible] = useState(false);
+  // First-time hint dot on the Computer icon, dismissed once the user opens
+  // the Computer tab.
+  const [showComputerHint, setShowComputerHint] = useState(false);
   const colors = useColors();
   const { isDark, gradientMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -172,6 +179,17 @@ export default function MainLayout() {
       void saveLastMainTab(activeTab);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    void hasSeenComputerHint().then((seen) => setShowComputerHint(!seen));
+  }, []);
+
+  // Dismiss the hint the moment the user lands on the Computer tab.
+  useEffect(() => {
+    if (!onComputer || !showComputerHint) return;
+    setShowComputerHint(false);
+    void markComputerHintSeen();
+  }, [onComputer, showComputerHint]);
 
   const openSidebar = () => {
     Keyboard.dismiss();
@@ -389,6 +407,9 @@ export default function MainLayout() {
                       color={colors.text}
                       weight="regular"
                     />
+                    {!onComputer && showComputerHint ? (
+                      <View style={styles.computerHintDot} />
+                    ) : null}
                   </Pressable>
                 </View>
               </View>
@@ -471,6 +492,19 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     height: 44,
     justifyContent: "center",
     width: 44,
+  },
+  // First-time hint dot, pinned to the top-right of the 22px monitor glyph
+  // (which is centered in the 44px button).
+  computerHintDot: {
+    backgroundColor: colors.danger,
+    borderColor: colors.background,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    height: 10,
+    position: "absolute",
+    right: 9,
+    top: 9,
+    width: 10,
   },
   wideChatHeader: {
     alignItems: "center",
