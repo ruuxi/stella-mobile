@@ -1354,6 +1354,20 @@ export function ChatPane({
         onSelect: () => void pickImage(),
       });
     }
+    out.push({
+      id: "read-aloud",
+      label: readAloud.enabled ? "Stop reading aloud" : "Read replies aloud",
+      icon: readAloud.enabled ? "volume-2" : "volume-x",
+      onSelect: () => void readAloud.setEnabled(!readAloud.enabled),
+    });
+    return out;
+  }, [enableAttachments, pickImage, readAloud]);
+
+  // Floating menu (computer chat only): "View computer" + model selection.
+  // Surfaced as a floating button above the composer rather than buried in
+  // the "+" menu. The chat tab passes none of these, so it renders nothing.
+  const floatingMenuOptions = useMemo<PlusMenuOption[]>(() => {
+    const out: PlusMenuOption[] = [];
     if (onViewComputer) {
       out.push({
         id: "view-computer",
@@ -1381,23 +1395,58 @@ export function ChatPane({
         onSelect: () => {},
       });
     }
-    out.push({
-      id: "read-aloud",
-      label: readAloud.enabled ? "Stop reading aloud" : "Read replies aloud",
-      icon: readAloud.enabled ? "volume-2" : "volume-x",
-      onSelect: () => void readAloud.setEnabled(!readAloud.enabled),
-    });
     return out;
   }, [
-    enableAttachments,
     modelOptions,
     onSelectModel,
     onViewComputer,
-    pickImage,
-    readAloud,
     selectedModel,
     selectedModelLabel,
   ]);
+
+  const floatingAnchorRef = useRef<View>(null);
+  const [floatingMenuAnchor, setFloatingMenuAnchor] =
+    useState<AnchorRect | null>(null);
+  const hasFloatingMenu = floatingMenuOptions.length > 0;
+
+  const onPressFloating = useCallback(() => {
+    const anchor = floatingAnchorRef.current;
+    if (!anchor) return;
+    Keyboard.dismiss();
+    anchor.measureInWindow((x, y, width, height) => {
+      setFloatingMenuAnchor({ x, y, width, height });
+    });
+  }, []);
+  const dismissFloatingMenu = useCallback(() => setFloatingMenuAnchor(null), []);
+
+  // Hide the floating button while scrolling up (reading back through
+  // history) and bring it back when scrolling down toward the latest.
+  const [floatingHidden, setFloatingHidden] = useState(false);
+  const lastScrollYRef = useRef(0);
+  const floatingAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.timing(floatingAnim, {
+      toValue: floatingHidden ? 0 : 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [floatingHidden, floatingAnim]);
+  const handleListScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      scroll.onScroll(e);
+      const y = e.nativeEvent.contentOffset.y;
+      const dy = y - lastScrollYRef.current;
+      lastScrollYRef.current = y;
+      // Ignore rubber-band/overscroll past the top.
+      if (y <= 0) {
+        setFloatingHidden(false);
+        return;
+      }
+      if (dy > 4) setFloatingHidden(false);
+      else if (dy < -4) setFloatingHidden(true);
+    },
+    [scroll.onScroll],
+  );
 
   const onPressPlus = useCallback(() => {
     if (plusMenuOptions.length === 0) return;
@@ -1497,7 +1546,7 @@ export function ChatPane({
               keyExtractor={keyExtractor}
               getItemType={getItemType}
               ItemSeparatorComponent={renderSeparator}
-              onScroll={scroll.onScroll}
+              onScroll={handleListScroll}
               onContentSizeChange={scroll.onListContentSizeChange}
               scrollEventThrottle={16}
               showsVerticalScrollIndicator={false}
@@ -1529,6 +1578,48 @@ export function ChatPane({
             />
           </>
         )}
+        {hasFloatingMenu ? (
+          <Animated.View
+            ref={floatingAnchorRef}
+            collapsable={false}
+            pointerEvents={floatingHidden ? "none" : "auto"}
+            style={[
+              styles.floatingMenuButton,
+              {
+                bottom: footerHeight + 8,
+                opacity: floatingAnim,
+                transform: [
+                  {
+                    translateY: floatingAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [12, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Pressable
+              accessibilityLabel="Computer options"
+              accessibilityRole="button"
+              hitSlop={6}
+              onPress={onPressFloating}
+              style={({ pressed }) => [
+                styles.floatingMenuPressable,
+                pressed && styles.scrollToBottomFabPressed,
+              ]}
+            >
+              <GlassView style={styles.floatingMenuGlass}>
+                <Icon
+                  name="settings"
+                  size={19}
+                  color={colors.accent}
+                  weight="semibold"
+                />
+              </GlassView>
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </View>
 
       <View
@@ -1728,6 +1819,13 @@ export function ChatPane({
         onDismiss={dismissPlusMenu}
         colors={colors}
       />
+      <PlusMenuPopover
+        visible={Boolean(floatingMenuAnchor) && hasFloatingMenu}
+        anchor={floatingMenuAnchor}
+        options={floatingMenuOptions}
+        onDismiss={dismissFloatingMenu}
+        colors={colors}
+      />
     </View>
   );
 }
@@ -1788,6 +1886,29 @@ const makeStyles = (colors: Colors) =>
       width: 40,
     },
     scrollToBottomFabPressed: { opacity: 0.88 },
+    floatingMenuButton: {
+      position: "absolute",
+      right: CHAT_HORIZONTAL_INSET,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 5,
+      elevation: 2,
+    },
+    floatingMenuPressable: {
+      height: 40,
+      width: 40,
+    },
+    floatingMenuGlass: {
+      alignItems: "center",
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 20,
+      borderWidth: StyleSheet.hairlineWidth,
+      flex: 1,
+      justifyContent: "center",
+      overflow: "hidden",
+      width: 40,
+    },
     scrollToBottomDot: {
       backgroundColor: colors.accent,
       borderColor: colors.surface,

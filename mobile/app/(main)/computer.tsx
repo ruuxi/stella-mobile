@@ -27,6 +27,7 @@ import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
 import { ChatPane } from "../../src/components/ChatPane";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
+import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
 
 const createId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -136,6 +137,7 @@ function AuthenticatedComputerChat() {
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
   const [paired, setPaired] = useState<boolean | null>(null);
   const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(null);
+  const [pairSheetOpen, setPairSheetOpen] = useState(false);
   const [pendingReply, setPendingReply] = useState<PendingReply | null>(null);
   const modelSelection = useStellaModelSelection();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -533,7 +535,7 @@ function AuthenticatedComputerChat() {
             from anywhere. You only need to do it once.
           </Text>
           <Pressable
-            onPress={() => router.push("/stella")}
+            onPress={() => setPairSheetOpen(true)}
             accessibilityLabel="Pair this phone"
             style={({ pressed }) => [
               styles.connectButton,
@@ -543,6 +545,15 @@ function AuthenticatedComputerChat() {
             <Text style={styles.connectButtonText}>Pair phone</Text>
           </Pressable>
         </View>
+        <PairPhoneSheet
+          visible={pairSheetOpen}
+          onClose={() => setPairSheetOpen(false)}
+          onPaired={(access) => {
+            setPhoneAccess(access);
+            setPaired(true);
+            setPairSheetOpen(false);
+          }}
+        />
       </View>
     );
   }

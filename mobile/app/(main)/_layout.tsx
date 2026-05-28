@@ -53,7 +53,6 @@ const TABS: {
   href: string;
 }[] = [
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
-  { id: "computer", label: "Computer", icon: "monitor", href: "/computer" },
   { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
 
@@ -166,6 +165,7 @@ export default function MainLayout() {
   const drawerProgress = useSharedValue(0);
 
   const activeTab = readActiveTab(pathname);
+  const onComputer = pathname === "/computer";
 
   useEffect(() => {
     if (activeTab) {
@@ -372,7 +372,25 @@ export default function MainLayout() {
                 <View style={styles.topBarCenter} pointerEvents="none">
                   <StellaBrandMark compact />
                 </View>
-                <View style={styles.topBarSide} />
+                <View style={styles.topBarSide}>
+                  <Pressable
+                    onPress={() =>
+                      router.replace(onComputer ? "/chat" : "/computer")
+                    }
+                    hitSlop={8}
+                    accessibilityLabel={
+                      onComputer ? "Back to chat" : "Open computer chat"
+                    }
+                    style={styles.hamburger}
+                  >
+                    <Icon
+                      name={onComputer ? "message-square" : "monitor"}
+                      size={22}
+                      color={colors.text}
+                      weight="regular"
+                    />
+                  </Pressable>
+                </View>
               </View>
 
               <View style={styles.content}>

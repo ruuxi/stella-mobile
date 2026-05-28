@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LayoutAnimation, StyleSheet, Text, View } from "react-native";
-import { useRouter } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import {
   loadOfflineChatMessages,
@@ -12,7 +11,6 @@ import { isGuest } from "../../src/lib/guest-mode";
 import { getOrCreateMobileDeviceId } from "../../src/lib/phone-access";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
-import { useStellaModelSelection } from "../../src/lib/model-selection";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
@@ -36,7 +34,6 @@ type QueuedSend = {
 export default function ChatScreen() {
   const colors = useColors();
   const guest = isGuest();
-  const router = useRouter();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
@@ -46,7 +43,6 @@ export default function ChatScreen() {
   >([]);
   const [sending, setSending] = useState(false);
   const [mobileDeviceId, setMobileDeviceId] = useState<string | null>(null);
-  const modelSelection = useStellaModelSelection();
 
   // Local follow-up queue. Mirrors the desktop's `queuedUserMessages` model
   // (see `desktop/src/app/chat/hooks/use-streaming-chat.ts`): user messages
@@ -187,7 +183,6 @@ export default function ChatScreen() {
             message: item.text,
             history,
             images: imagesPayload,
-            model: modelSelection.selectedModel,
           },
           onDelta,
           streamOptions,
@@ -231,7 +226,7 @@ export default function ChatScreen() {
         void drainQueue();
       }
     },
-    [guest, modelSelection.selectedModel],
+    [guest],
   );
 
   const drainQueue = useCallback(() => {
@@ -328,11 +323,6 @@ export default function ChatScreen() {
         enableAttachments
         attachments={attachments}
         onChangeAttachments={setAttachments}
-        onViewComputer={() => router.push("/stella")}
-        selectedModel={modelSelection.selectedModel}
-        selectedModelLabel={modelSelection.selectedModelLabel}
-        modelOptions={modelSelection.models}
-        onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
         dictationAnonymous={guest}
         dictationHeaders={dictationHeaders}
       />

@@ -4,14 +4,10 @@ import {
   ActivityIndicator,
   BackHandler,
   Linking,
-  Modal,
   Platform,
   Pressable,
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
@@ -27,20 +23,17 @@ import {
   getPreferredPhoneAccess,
   listStoredPairedPhoneAccess,
   requestDesktopConnection,
-  setPreferredDesktopDeviceId,
   type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
 import { generateShimScript } from "../../src/lib/shim";
 import { registerStellaRefresh } from "../../src/lib/stella-refresh";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { DesktopTabAnimation } from "../../src/components/DesktopTabAnimation";
-import { PairingQrScanner } from "../../src/components/PairingQrScanner";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
-import { GlassCard } from "../../src/components/GlassCard";
+import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
 import { notifyError, notifySuccess } from "../../src/lib/haptics";
 import { type Colors } from "../../src/theme/colors";
 import { useColors } from "../../src/theme/theme-context";
-import { fadeHex } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
 
 type MobileBridgeBootstrap = {
@@ -80,20 +73,6 @@ const normalizePairingCode = (value: string) =>
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, PAIRING_CODE_LENGTH);
-
-const shortDesktopId = (id: string) => id.slice(0, 4).toUpperCase();
-
-const desktopChipLabel = (
-  access: StoredPhoneAccess,
-  platform: string | null | undefined,
-  showSuffix: boolean,
-): string => {
-  const base = platform?.trim() || "Computer";
-  if (!showSuffix) {
-    return base;
-  }
-  return `${base} · ${shortDesktopId(access.desktopDeviceId)}`;
-};
 
 function getBridgeOrigin(bridgeUrl: string): string {
   return new URL(bridgeUrl).origin;
@@ -215,7 +194,6 @@ function AuthenticatedStellaScreen() {
     useState<StoredPhoneAccess | null>(null);
   const [pairingCode, setPairingCode] = useState(routeCode);
   const [isPairing, setIsPairing] = useState(false);
-  const [isScanningQr, setIsScanningQr] = useState(false);
   const [isPairSheetOpen, setIsPairSheetOpen] = useState(false);
   const [pairedDesktops, setPairedDesktops] = useState<StoredPhoneAccess[]>(
     [],
@@ -527,150 +505,20 @@ function AuthenticatedStellaScreen() {
           )}
         </View>
 
-        <Modal
+        <PairPhoneSheet
           visible={isPairSheetOpen}
-          animationType="slide"
-          presentationStyle="pageSheet"
-          onRequestClose={() => setIsPairSheetOpen(false)}
-        >
-          <SafeAreaView style={styles.sheetSafe}>
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>
-                {preferredAccess ? "Pair another computer" : "Pair your phone"}
-              </Text>
-              <Pressable
-                onPress={() => setIsPairSheetOpen(false)}
-                accessibilityLabel="Close pair sheet"
-                style={styles.sheetClose}
-              >
-                <Text style={styles.sheetCloseText}>Done</Text>
-              </Pressable>
-            </View>
-            <ScrollView
-              contentContainerStyle={styles.sheetContent}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Text style={styles.sheetBody}>
-                Open Stella on your computer and scan the QR code shown on the
-                Pair phone screen. After this, your phone reconnects on its
-                own.
-              </Text>
-
-              {pairedDesktops.length > 1 ? (
-                <View style={styles.switchDesktopRow}>
-                  <Text style={styles.inputLabel}>Paired computers</Text>
-                  <View style={styles.switchDesktopChips}>
-                    {pairedDesktops.map((d) => {
-                      const platform =
-                        desktopPlatforms[d.desktopDeviceId] ?? null;
-                      const samePlatformCount = pairedDesktops.filter(
-                        (other) =>
-                          (desktopPlatforms[other.desktopDeviceId] ?? null) ===
-                          platform,
-                      ).length;
-                      return (
-                        <Pressable
-                          key={d.desktopDeviceId}
-                          onPress={() => {
-                            void setPreferredDesktopDeviceId(d.desktopDeviceId);
-                            setIsPairSheetOpen(false);
-                            void refreshBridge(d);
-                          }}
-                          accessibilityLabel={`Switch to ${desktopChipLabel(d, platform, true)}`}
-                          style={({ pressed }) => [
-                            styles.desktopChip,
-                            pressed && styles.desktopChipPressed,
-                            preferredAccess?.desktopDeviceId ===
-                              d.desktopDeviceId
-                              ? styles.desktopChipActive
-                              : null,
-                          ]}
-                        >
-                          <Text style={styles.desktopChipText}>
-                            {desktopChipLabel(
-                              d,
-                              platform,
-                              samePlatformCount > 1,
-                            )}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-              ) : null}
-
-              <Pressable
-                onPress={() => setIsScanningQr(true)}
-                disabled={isPairing}
-                accessibilityLabel="Scan pairing QR code"
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  pressed && styles.actionButtonPressed,
-                  isPairing && styles.actionButtonDisabled,
-                ]}
-              >
-                <Text style={styles.actionButtonText}>Scan QR code</Text>
-              </Pressable>
-
-              <View style={styles.manualCodeBlock}>
-                <Text style={styles.manualCodeLabel}>
-                  or enter code manually
-                </Text>
-                <GlassCard radius={14} ringed>
-                  <TextInput
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    keyboardType="ascii-capable"
-                    maxFontSizeMultiplier={1.2}
-                    maxLength={PAIRING_CODE_LENGTH}
-                    onChangeText={(value) =>
-                      setPairingCode(normalizePairingCode(value))
-                    }
-                    onSubmitEditing={() => {
-                      setIsPairSheetOpen(false);
-                      void pairPhone();
-                    }}
-                    placeholder="ABCDEFGH"
-                    placeholderTextColor={fadeHex(colors.textMuted, 0.3)}
-                    returnKeyType="go"
-                    style={styles.manualCodeInput}
-                    textContentType="oneTimeCode"
-                    value={pairingCode}
-                  />
-                </GlassCard>
-                <Pressable
-                  onPress={() => {
-                    setIsPairSheetOpen(false);
-                    void pairPhone();
-                  }}
-                  disabled={isPairing || pairingCode.length === 0}
-                  accessibilityLabel="Submit pairing code"
-                  style={({ pressed }) => [
-                    styles.manualCodeSubmit,
-                    pressed && styles.manualCodeSubmitPressed,
-                    (isPairing || pairingCode.length === 0) &&
-                      styles.manualCodeSubmitDisabled,
-                  ]}
-                >
-                  <Text style={styles.manualCodeSubmitText}>
-                    {isPairing ? "Pairing\u2026" : "Pair with code"}
-                  </Text>
-                </Pressable>
-              </View>
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
-
-        <PairingQrScanner
-          visible={isScanningQr}
-          onClose={() => setIsScanningQr(false)}
-          onCodeScanned={(code) => {
-            setIsScanningQr(false);
+          onClose={() => setIsPairSheetOpen(false)}
+          onPaired={(access) => {
             setIsPairSheetOpen(false);
-            setPairingCode(code);
-            void pairPhone(code);
+            updatePreferredAccess(access);
+            router.replace("/computer");
+          }}
+          preferredAccess={preferredAccess}
+          pairedDesktops={pairedDesktops}
+          desktopPlatforms={desktopPlatforms}
+          onSwitchDesktop={(d) => {
+            setIsPairSheetOpen(false);
+            void refreshBridge(d);
           }}
         />
       </View>
@@ -760,54 +608,6 @@ const makeStyles = (colors: Colors, insetBottom: number) => StyleSheet.create({
     paddingTop: 32,
     paddingBottom: insetBottom + 24,
   },
-  sheetSafe: {
-    backgroundColor: colors.background,
-    flex: 1,
-  },
-  sheetHandle: {
-    alignSelf: "center",
-    backgroundColor: colors.border,
-    borderRadius: 3,
-    height: 5,
-    marginTop: 8,
-    width: 40,
-  },
-  sheetHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 12,
-  },
-  sheetTitle: {
-    color: colors.text,
-    flex: 1,
-    fontFamily: fonts.sans.semiBold,
-    fontSize: 18,
-    letterSpacing: -0.4,
-  },
-  sheetClose: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  sheetCloseText: {
-    color: colors.accent,
-    fontFamily: fonts.sans.semiBold,
-    fontSize: 16,
-  },
-  sheetContent: {
-    gap: 18,
-    paddingBottom: 36,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-  },
-  sheetBody: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.regular,
-    fontSize: 15,
-    letterSpacing: -0.2,
-    lineHeight: 22,
-  },
   centered: {
     alignItems: "center",
     flex: 1,
@@ -849,84 +649,6 @@ const makeStyles = (colors: Colors, insetBottom: number) => StyleSheet.create({
   statusBlock: {
     gap: 8,
     paddingTop: 8,
-  },
-  switchDesktopRow: {
-    gap: 8,
-    paddingHorizontal: 4,
-  },
-  switchDesktopChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  desktopChip: {
-    borderColor: colors.border,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  desktopChipPressed: {
-    opacity: 0.85,
-  },
-  desktopChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.panel,
-  },
-  desktopChipText: {
-    color: colors.text,
-    fontFamily: fonts.sans.medium,
-    fontSize: 13,
-  },
-  inputLabel: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.medium,
-    fontSize: 13,
-    letterSpacing: 0.2,
-    textAlign: "center",
-  },
-  manualCodeBlock: {
-    alignItems: "stretch",
-    gap: 10,
-    marginTop: 24,
-  },
-  manualCodeLabel: {
-    color: colors.textMuted,
-    fontFamily: fonts.sans.regular,
-    fontSize: 13,
-    letterSpacing: -0.1,
-    textAlign: "center",
-  },
-  manualCodeInput: {
-    color: colors.text,
-    fontFamily: fonts.sans.semiBold,
-    fontSize: 22,
-    letterSpacing: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    textAlign: "center",
-  },
-  manualCodeSubmit: {
-    alignItems: "center",
-    borderColor: colors.border,
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    justifyContent: "center",
-    minHeight: 44,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-  },
-  manualCodeSubmitPressed: {
-    opacity: 0.8,
-  },
-  manualCodeSubmitDisabled: {
-    opacity: 0.45,
-  },
-  manualCodeSubmitText: {
-    color: colors.text,
-    fontFamily: fonts.sans.medium,
-    fontSize: 15,
-    letterSpacing: -0.2,
   },
   actionRow: {
     flexDirection: "row",
