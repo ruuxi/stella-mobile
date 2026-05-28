@@ -33,6 +33,7 @@ import {
 } from "@legendapp/list/react-native";
 import { Image } from "expo-image";
 import { GlassView } from "expo-glass-effect";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -720,12 +721,14 @@ function ScrollToBottomFab({
         pressed && styles.scrollToBottomFabPressed,
       ]}
     >
-      <Icon
-        name="chevron-down"
-        size={20}
-        color={colors.accent}
-        weight="semibold"
-      />
+      <GlassView style={styles.scrollToBottomFabGlass}>
+        <Icon
+          name="chevron-down"
+          size={19}
+          color={colors.accent}
+          weight="semibold"
+        />
+      </GlassView>
       {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
     </Pressable>
   );
@@ -1506,13 +1509,23 @@ export function ChatPane({
                   : Math.max(0, messages.length - 1)
               }
             />
+            {/* Top taper — fades the list into the surface at the top edge so
+                messages scrolling under the top bar dissolve instead of
+                hard-cutting. Cross-platform (RN `fadingEdgeLength` is
+                Android-only). */}
+            <LinearGradient
+              colors={[colors.background, fadeHex(colors.background, 0)]}
+              locations={[0, 1]}
+              style={styles.topTaper}
+              pointerEvents="none"
+            />
             <ScrollToBottomFab
               visible={scroll.awayFromBottom}
               hasUnread={unread}
               onPress={scroll.scrollToBottom}
               styles={styles}
               colors={colors}
-              bottomOffset={footerHeight + 8}
+              bottomOffset={footerHeight - 24}
             />
           </>
         )}
@@ -1744,23 +1757,35 @@ const makeStyles = (colors: Colors) =>
 
     viewport: { flex: 1, minHeight: 0, position: "relative" },
     messageList: { flex: 1 },
-    scrollToBottomFab: {
-      alignItems: "center",
-      backgroundColor: colors.surface,
-      borderColor: colors.borderStrong,
-      borderRadius: 22,
-      borderWidth: StyleSheet.hairlineWidth,
-      bottom: 8,
-      height: 44,
-      justifyContent: "center",
+    topTaper: {
+      height: EDGE_FADE,
+      left: 0,
       position: "absolute",
-      right: CHAT_HORIZONTAL_INSET,
+      right: 0,
+      top: 0,
+    },
+    scrollToBottomFab: {
+      bottom: 8,
+      height: 40,
+      position: "absolute",
+      left: "50%",
+      marginLeft: -20,
       shadowColor: "#000",
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.12,
-      shadowRadius: 10,
-      elevation: 4,
-      width: 44,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 5,
+      elevation: 2,
+      width: 40,
+    },
+    scrollToBottomFabGlass: {
+      alignItems: "center",
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 20,
+      borderWidth: StyleSheet.hairlineWidth,
+      flex: 1,
+      justifyContent: "center",
+      overflow: "hidden",
+      width: 40,
     },
     scrollToBottomFabPressed: { opacity: 0.88 },
     scrollToBottomDot: {

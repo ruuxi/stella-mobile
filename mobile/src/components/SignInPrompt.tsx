@@ -6,7 +6,7 @@ import { useColors } from "../theme/theme-context";
 import { fonts } from "../theme/fonts";
 
 type Props = {
-  message: string;
+  message?: string;
 };
 
 export function SignInPrompt({ message }: Props) {
@@ -16,7 +16,7 @@ export function SignInPrompt({ message }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.message}>{message}</Text>
+      {message ? <Text style={styles.message}>{message}</Text> : null}
       <Pressable
         onPress={() => router.replace("/login")}
         style={({ pressed }) => [
@@ -34,9 +34,7 @@ const makeStyles = (colors: Colors) =>
   StyleSheet.create({
     container: {
       alignItems: "center",
-      flex: 1,
       gap: 20,
-      justifyContent: "center",
       paddingHorizontal: 32,
     },
     message: {

@@ -10,19 +10,26 @@ const STELLA_LOGO =
     ? require("../../assets/stella-logo-84.png")
     : require("../../assets/stella-logo-56.png");
 
-export function StellaBrandMark() {
+type Props = {
+  /** Drop the sidebar header padding for use in tight spots (e.g. the top bar). */
+  compact?: boolean;
+};
+
+export function StellaBrandMark({ compact = false }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   return (
-    <View style={styles.root}>
+    <View style={compact ? styles.rootCompact : styles.root}>
       <Image
         source={STELLA_LOGO}
-        style={styles.logo}
+        style={compact ? styles.logoCompact : styles.logo}
         resizeMode="contain"
         accessibilityIgnoresInvertColors
       />
-      <Text style={styles.wordmark}>Stella</Text>
+      <Text style={compact ? styles.wordmarkCompact : styles.wordmark}>
+        Stella
+      </Text>
     </View>
   );
 }
@@ -36,10 +43,20 @@ const makeStyles = (colors: Colors) =>
       paddingBottom: 20,
       paddingHorizontal: 20,
     },
+    rootCompact: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 8,
+    },
     logo: {
       height: 28,
       opacity: 0.55,
       width: 28,
+    },
+    logoCompact: {
+      height: 20,
+      opacity: 0.55,
+      width: 20,
     },
     wordmark: {
       color: colors.textMuted,
@@ -47,5 +64,12 @@ const makeStyles = (colors: Colors) =>
       fontSize: 22,
       letterSpacing: -0.4,
       lineHeight: 24,
+    },
+    wordmarkCompact: {
+      color: colors.textMuted,
+      fontFamily: fonts.display.regularItalic,
+      fontSize: 18,
+      letterSpacing: -0.3,
+      lineHeight: 20,
     },
   });

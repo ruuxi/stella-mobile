@@ -358,7 +358,7 @@ export default function MainLayout() {
                   sidebar stays hidden) instead of being covered by a flat
                   fill. Clipped to the rounded corners via overflow:hidden. */}
               {renderGradient()}
-              <View style={[styles.topBar, { paddingTop: insets.top }]}>
+              <View style={[styles.topBar, { height: insets.top + 36 }]}>
                 <View style={styles.topBarSide}>
                   <Pressable
                     onPress={openSidebar}
@@ -369,7 +369,9 @@ export default function MainLayout() {
                     <Icon name="menu" size={22} color={colors.text} weight="semibold" />
                   </Pressable>
                 </View>
-                <View style={styles.topBarCenter} pointerEvents="box-none" />
+                <View style={styles.topBarCenter} pointerEvents="none">
+                  <StellaBrandMark compact />
+                </View>
                 <View style={styles.topBarSide} />
               </View>
 
@@ -419,11 +421,13 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     flex: 1,
   },
 
-  // Top bar — phone only (hamburger | centered pill on Chat | action)
+  // Top bar — phone only (hamburger | centered pill on Chat | action).
+  // Height is set inline as `insets.top + barHeight` so the safe-area inset
+  // is added on top of the bar's own height rather than eating into it
+  // (RN box model is border-box, so a fixed `height` would absorb the inset).
   topBar: {
-    alignItems: "center",
+    alignItems: "flex-end",
     flexDirection: "row",
-    height: 44,
     paddingHorizontal: 4,
   },
   topBarSide: {

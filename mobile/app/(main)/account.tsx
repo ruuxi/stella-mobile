@@ -328,10 +328,6 @@ export default function AccountScreen() {
       ) : (
         <View style={styles.signInBlock}>
           <Text style={styles.signInTitle}>Sign in to Stella</Text>
-          <Text style={styles.signInSub}>
-            Sync your account, manage paired computers, and unlock cloud
-            features.
-          </Text>
           <Pressable
             onPress={() => router.replace("/login")}
             accessibilityLabel="Sign in to Stella"
@@ -691,13 +687,6 @@ const makeStyles = (colors: Colors) =>
       fontFamily: fonts.sans.semiBold,
       fontSize: 17,
       letterSpacing: -0.3,
-    },
-    signInSub: {
-      color: colors.textMuted,
-      fontFamily: fonts.sans.regular,
-      fontSize: 14,
-      letterSpacing: -0.1,
-      lineHeight: 20,
     },
     signInButton: {
       alignItems: "center",

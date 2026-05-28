@@ -44,9 +44,22 @@ function GuestComputerChat() {
   const styles = useMemo(
     () =>
       StyleSheet.create({
-        block: {
+        // The hero (animated SVG + copy) and the sign-in CTA are independent
+        // sections so tuning one never shifts the other. The hero owns the
+        // flexible upper region; the CTA anchors toward the bottom.
+        container: {
+          flex: 1,
+          justifyContent: "center",
+          width: "100%",
+        },
+        heroSection: {
           alignItems: "center",
           gap: 12,
+          paddingHorizontal: 32,
+        },
+        signInSection: {
+          alignItems: "center",
+          marginTop: 28,
           paddingHorizontal: 32,
         },
         title: {
@@ -74,14 +87,18 @@ function GuestComputerChat() {
       messages={[]}
       streaming={false}
       emptyContent={
-        <View style={styles.block}>
-          <ConnectHeroAnimation />
-          <Text style={styles.title}>Your computer, at your fingertips</Text>
-          <Text style={styles.body}>
-            Ask Stella to do things on your computer — browse the web, manage
-            files, run tasks, and more.
-          </Text>
-          <SignInPrompt message="Sign in to get started." />
+        <View style={styles.container}>
+          <View style={styles.heroSection}>
+            <ConnectHeroAnimation />
+            <Text style={styles.title}>Your computer, at your fingertips</Text>
+            <Text style={styles.body}>
+              Ask Stella to do things on your computer — browse the web, manage
+              files, run tasks, and more.
+            </Text>
+          </View>
+          <View style={styles.signInSection}>
+            <SignInPrompt />
+          </View>
         </View>
       }
       draft=""
@@ -444,6 +461,7 @@ function AuthenticatedComputerChat() {
         block: {
           alignItems: "center",
           gap: 8,
+          marginTop: 96,
         },
         title: {
           color: colors.textMuted,
