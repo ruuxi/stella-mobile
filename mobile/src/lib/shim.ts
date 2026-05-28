@@ -26,6 +26,22 @@ export function generateShimScript(
   // ── Tag document for mobile CSS overrides ────────────────────────────
   document.documentElement.setAttribute('data-platform', 'mobile');
 
+  // ── Native-feel touch resets ─────────────────────────────────────────
+  // Universal selectors only, so this survives desktop self-modification
+  // and never depends on Stella's class names or layout. Removes the
+  // "this is a webpage" tells: tap-flash on touch, whole-page rubber-band
+  // overscroll, and long-press save/share callouts on controls. Text
+  // selection on content stays intact so chat output is still copyable.
+  try {
+    var __mreset = document.createElement('style');
+    __mreset.id = 'stella-mobile-reset';
+    __mreset.textContent =
+      '*{-webkit-tap-highlight-color:transparent !important;}' +
+      'html,body{overscroll-behavior:none;}' +
+      'a,button,[role="button"]{-webkit-touch-callout:none;}';
+    document.documentElement.appendChild(__mreset);
+  } catch(e) {}
+
   // ── Inject bootstrap localStorage state ────────────────────────────
   // Copies the allowlisted desktop session and preference keys into the
   // WebView before the React app initializes.

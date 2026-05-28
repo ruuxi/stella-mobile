@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   ActivityIndicator,
-  BackHandler,
   Linking,
-  Platform,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -12,6 +11,7 @@ import {
 } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Icon } from "../../src/components/Icon";
 import { assert, assertObject } from "../../src/lib/assert";
 import { isGuest } from "../../src/lib/guest-mode";
 import { getConvexToken } from "../../src/lib/auth-token";
@@ -422,18 +422,21 @@ function AuthenticatedStellaScreen() {
     void pairPhone(routeCode);
   }, [pairPhone, routeCode]);
 
-  useEffect(() => {
-    if (Platform.OS !== "android") return;
-    const onBackPress = () => {
-      if (canGoBack && webViewRef.current) {
-        webViewRef.current.goBack();
-        return true;
-      }
-      return false;
-    };
-    const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
-    return () => sub.remove();
-  }, [canGoBack]);
+  // Layered back: step through the desktop app's own history first, then
+  // drop out of the full-screen view back to the Computer tab. Drives both
+  // the floating back control and Android's hardware back (Modal
+  // onRequestClose). iOS edge-swipe-back is handled by the WebView itself.
+  const goBackOrExit = useCallback(() => {
+    if (canGoBack && webViewRef.current) {
+      webViewRef.current.goBack();
+      return;
+    }
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/computer");
+    }
+  }, [canGoBack, router]);
 
   const handleMessage = (event: WebViewMessageEvent) => {
     const message = readShimMessage(event.nativeEvent.data);
@@ -527,14 +530,49 @@ function AuthenticatedStellaScreen() {
 
   const bridgeOrigin = getBridgeOrigin(screenState.bridge.bridgeUrl);
   return (
-    <View style={styles.screenReady}>
-      {!bridgeConnected && (
-        <View style={styles.reconnectBanner}>
-          <ActivityIndicator size="small" color={colors.textMuted} />
-          <Text style={styles.reconnectText}>Reconnecting to desktop...</Text>
+    // Full-screen Modal so the live desktop covers the app's own top bar and
+    // sidebar chrome — edge-to-edge, like a native screen. Only the system
+    // status-bar / home-indicator regions are padded so the desktop UI never
+    // sits under the clock or the home bar.
+    <Modal
+      visible
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={goBackOrExit}
+    >
+      <View
+        style={[
+          styles.screenFull,
+          { paddingTop: insets.top, paddingBottom: insets.bottom },
+        ]}
+      >
+        <View style={styles.stellaBar}>
+          <Pressable
+            onPress={goBackOrExit}
+            hitSlop={8}
+            accessibilityLabel="Back"
+            style={({ pressed }) => [
+              styles.stellaBarBtn,
+              pressed && styles.stellaBarBtnPressed,
+            ]}
+          >
+            <Icon
+              name="chevron-left"
+              size={22}
+              color={colors.text}
+              weight="semibold"
+            />
+          </Pressable>
+          <View style={styles.stellaBarStatus} pointerEvents="none">
+            {!bridgeConnected && (
+              <>
+                <ActivityIndicator size="small" color={colors.textMuted} />
+                <Text style={styles.reconnectText}>Reconnecting...</Text>
+              </>
+            )}
+          </View>
+          <View style={styles.stellaBarBtn} />
         </View>
-      )}
-      <View style={styles.webFrame}>
         <WebView
           ref={webViewRef}
           source={{
@@ -549,6 +587,18 @@ function AuthenticatedStellaScreen() {
             screenState.bridge.bootstrap,
           )}
           style={styles.webView}
+          // Native touch/scroll/keyboard polish — mobile-owned, touches no desktop UI.
+          decelerationRate="normal"
+          bounces={false}
+          overScrollMode="never"
+          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator={false}
+          automaticallyAdjustContentInsets={false}
+          contentInsetAdjustmentBehavior="never"
+          allowsBackForwardNavigationGestures
+          hideKeyboardAccessoryView
+          keyboardDisplayRequiresUserAction={false}
+          mediaPlaybackRequiresUserAction={false}
           onMessage={handleMessage}
           onNavigationStateChange={(nav) => setCanGoBack(nav.canGoBack)}
           onShouldStartLoadWithRequest={(request) => {
@@ -576,7 +626,7 @@ function AuthenticatedStellaScreen() {
           originWhitelist={[bridgeOrigin, "about:blank"]}
         />
       </View>
-    </View>
+    </Modal>
   );
 }
 
@@ -584,10 +634,37 @@ const makeStyles = (colors: Colors, insetBottom: number) => StyleSheet.create({
   screen: {
     flex: 1,
   },
-  /** Main layout when WebView is shown (banner + frame). */
-  screenReady: {
+  /** Full-screen container hosting the live desktop WebView. */
+  screenFull: {
     flex: 1,
-    gap: 12,
+    backgroundColor: colors.surface,
+  },
+  /** Slim bar above the live desktop holding the back control + status. */
+  stellaBar: {
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    height: 44,
+    paddingHorizontal: 6,
+  },
+  stellaBarBtn: {
+    alignItems: "center",
+    borderRadius: 10,
+    height: 38,
+    justifyContent: "center",
+    width: 38,
+  },
+  stellaBarBtnPressed: {
+    opacity: 0.6,
+  },
+  stellaBarStatus: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "center",
   },
   unavailableScroll: {
     flexGrow: 1,
@@ -697,26 +774,11 @@ const makeStyles = (colors: Colors, insetBottom: number) => StyleSheet.create({
     fontSize: 15,
     letterSpacing: -0.2,
   },
-  reconnectBanner: {
-    alignItems: "center",
-    backgroundColor: colors.panel,
-    borderRadius: 10,
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
   reconnectText: {
     color: colors.textMuted,
     fontFamily: fonts.sans.regular,
     fontSize: 13,
     letterSpacing: -0.1,
-  },
-  webFrame: {
-    borderRadius: 14,
-    flex: 1,
-    overflow: "hidden",
   },
   webView: {
     flex: 1,
