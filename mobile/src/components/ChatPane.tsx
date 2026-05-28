@@ -27,10 +27,10 @@ import {
   View,
 } from "react-native";
 import {
-  FlashList,
-  type FlashListRef,
-  type ListRenderItemInfo,
-} from "@shopify/flash-list";
+  LegendList,
+  type LegendListRef,
+  type LegendListRenderItemProps,
+} from "@legendapp/list/react-native";
 import { Image } from "expo-image";
 import { GlassView } from "expo-glass-effect";
 import * as Clipboard from "expo-clipboard";
@@ -185,7 +185,7 @@ function useKeyboardInset() {
 // ---------------------------------------------------------------------------
 
 function useChatScroll(listTrailingSlackPx: number) {
-  const listRef = useRef<FlashListRef<ChatMessage>>(null);
+  const listRef = useRef<LegendListRef>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const nearBottomLimit = SCROLL_NEAR_BOTTOM_BASE_PX + listTrailingSlackPx;
   const atBottomLimit = SCROLL_AT_BOTTOM_THRESHOLD + listTrailingSlackPx;
@@ -1127,7 +1127,7 @@ export function ChatPane({
   const inputRef = useRef<TextInput>(null);
   const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
   // The composer + working indicator overlay the bottom of the chat. We
-  // measure their actual height so the FlashList can reserve matching
+  // measure their actual height so the list can reserve matching
   // bottom inset, letting messages scroll under the composer (visible
   // through transparent margins around the GlassView) instead of being
   // clipped by it.
@@ -1172,7 +1172,7 @@ export function ChatPane({
   }, [streaming, scroll.resetAssistantAutoScroll]);
 
   // Anchor at the bottom on first load so we open into the latest message
-  // instead of the top of the history. Wait two frames so FlashList has
+  // instead of the top of the history. Wait two frames so the list has
   // laid out and the content size is real before jumping.
   const didInitialScrollRef = useRef(false);
   useEffect(() => {
@@ -1424,7 +1424,7 @@ export function ChatPane({
   const streamingAssistantId =
     streaming && lastMessage?.role === "assistant" ? lastMessage.id : null;
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<ChatMessage>) => (
+    ({ item }: LegendListRenderItemProps<ChatMessage>) => (
       <FadeInMessage key={item.id}>
         <ChatMessageRow
           item={item}
@@ -1485,7 +1485,7 @@ export function ChatPane({
           </Pressable>
         ) : (
           <>
-            <FlashList
+            <LegendList<ChatMessage>
               ref={scroll.listRef}
               style={styles.messageList}
               contentContainerStyle={listContentContainerStyle}
