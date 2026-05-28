@@ -531,21 +531,17 @@ function AuthenticatedStellaScreen() {
   const bridgeOrigin = getBridgeOrigin(screenState.bridge.bridgeUrl);
   return (
     // Full-screen Modal so the live desktop covers the app's own top bar and
-    // sidebar chrome — edge-to-edge, like a native screen. Only the system
-    // status-bar / home-indicator regions are padded so the desktop UI never
-    // sits under the clock or the home bar.
+    // sidebar chrome — edge-to-edge, like a native screen. Only the top is
+    // padded (for the status bar + back bar); the WebView runs flush to the
+    // bottom edge so the desktop's own content reaches the bottom with no
+    // surface-colored gap below it.
     <Modal
       visible
       animationType="fade"
       statusBarTranslucent
       onRequestClose={goBackOrExit}
     >
-      <View
-        style={[
-          styles.screenFull,
-          { paddingTop: insets.top, paddingBottom: insets.bottom },
-        ]}
-      >
+      <View style={[styles.screenFull, { paddingTop: insets.top }]}>
         <View style={styles.stellaBar}>
           <Pressable
             onPress={goBackOrExit}
