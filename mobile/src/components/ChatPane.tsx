@@ -25,6 +25,7 @@ import {
   Text,
   TextInput,
   UIManager,
+  useWindowDimensions,
   View,
 } from "react-native";
 import {
@@ -35,11 +36,13 @@ import {
 import { Image } from "expo-image";
 import { GlassView } from "expo-glass-effect";
 import { LinearGradient } from "expo-linear-gradient";
+import MaskedView from "@react-native-masked-view/masked-view";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
 import { AssistantMarkdown } from "./AssistantMarkdown";
+import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
@@ -1190,6 +1193,8 @@ export function ChatPane({
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const readAloud = useReadAloudPreference();
+  const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
 
   const inputRef = useRef<TextInput>(null);
   const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
@@ -1647,13 +1652,33 @@ export function ChatPane({
             {/* Top taper — fades the list into the surface at the top edge so
                 messages scrolling under the top bar dissolve instead of
                 hard-cutting. Cross-platform (RN `fadingEdgeLength` is
-                Android-only). */}
-            <LinearGradient
-              colors={[colors.background, fadeHex(colors.background, 0)]}
-              locations={[0, 1]}
+                Android-only). Paints the *actual* app backdrop (aligned to the
+                screen via the top-bar offset) and masks it to a vertical fade,
+                so it matches the soft gradient seamlessly instead of stamping a
+                flat `colors.background` band over it. */}
+            <MaskedView
               style={styles.topTaper}
               pointerEvents="none"
-            />
+              maskElement={
+                <LinearGradient
+                  colors={["#000", "rgba(0,0,0,0)"]}
+                  locations={[0, 1]}
+                  style={StyleSheet.absoluteFill}
+                />
+              }
+            >
+              <View
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: -(insets.top + TOP_BAR_BAR_HEIGHT),
+                  height: screenHeight,
+                }}
+              >
+                <AppBackdrop />
+              </View>
+            </MaskedView>
             <ScrollToBottomFab
               visible={scroll.awayFromBottom}
               hasUnread={unread}

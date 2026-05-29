@@ -13,9 +13,12 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import { Icon, type IconName } from "../../src/components/Icon";
 import { GlassCard } from "../../src/components/GlassCard";
+import {
+  AppBackdrop,
+  TOP_BAR_BAR_HEIGHT,
+} from "../../src/components/AppBackdrop";
 import { StellaBrandMark } from "../../src/components/StellaBrandMark";
 import {
   Keyboard,
@@ -35,7 +38,6 @@ import Animated, {
 } from "react-native-reanimated";
 import { type Colors } from "../../src/theme/colors";
 import { useColors, useTheme } from "../../src/theme/theme-context";
-import { soften } from "../../src/theme/oklch";
 import { fonts } from "../../src/theme/fonts";
 import {
   MAIN_TAB_HREFS,
@@ -139,7 +141,7 @@ export default function MainLayout() {
   // the Computer tab.
   const [showComputerHint, setShowComputerHint] = useState(false);
   const colors = useColors();
-  const { isDark, gradientMode } = useTheme();
+  const { isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   useEffect(() => {
@@ -293,33 +295,6 @@ export default function MainLayout() {
     opacity: drawerProgress.value * 0.18,
   }));
 
-  // In flat mode (or when a forcedMode theme like Pearl/Noir is active) we
-  // paint the plain theme background, matching the desktop Gradient → Flat
-  // setting. Soft mode keeps the diagonal accent ↔ background ↔ ok blob.
-  // Both fills are fully opaque so they double as the foreground's own
-  // surface — covering the parked sidebar while letting the chosen mode
-  // actually show through the app (a transparent foreground would leak the
-  // sidebar). Rendered as a function so the same backdrop can sit behind the
-  // shell (for the rounded-corner / drawer reveal) and inside the foreground.
-  const renderGradient = () =>
-    gradientMode === "flat" ? (
-      <View
-        style={[StyleSheet.absoluteFill, { backgroundColor: colors.background }]}
-      />
-    ) : (
-      <LinearGradient
-        colors={[
-          soften(colors.accent, colors.background, isDark ? 0.1 : 0.14),
-          colors.background,
-          soften(colors.ok, colors.background, isDark ? 0.07 : 0.1),
-        ]}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-    );
-
   return (
     // edges=[] disables SafeAreaView's auto-padding so every layer below
     // (gradient, sidebar, foreground) can extend edge-to-edge through the
@@ -331,7 +306,7 @@ export default function MainLayout() {
 
       {wide ? (
         <>
-          {renderGradient()}
+          <AppBackdrop />
           <View style={styles.wideLayout}>
             <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
             <View style={styles.content}>
@@ -346,7 +321,7 @@ export default function MainLayout() {
           {/* Gradient backdrop — painted behind both sidebar and foreground
               so the inset/rounded foreground reveals the same continuous
               canvas through its curved corners (no contrasting bands). */}
-          {renderGradient()}
+          <AppBackdrop />
           {/* Sidebar parked underneath at the left edge. Always mounted,
               statically positioned, edge-to-edge vertically. The foreground
               (below) slides right to reveal it, so the menu reads as a layer
@@ -375,8 +350,13 @@ export default function MainLayout() {
                   so soft/flat is actually visible in the app (and the parked
                   sidebar stays hidden) instead of being covered by a flat
                   fill. Clipped to the rounded corners via overflow:hidden. */}
-              {renderGradient()}
-              <View style={[styles.topBar, { height: insets.top + 36 }]}>
+              <AppBackdrop />
+              <View
+                style={[
+                  styles.topBar,
+                  { height: insets.top + TOP_BAR_BAR_HEIGHT },
+                ]}
+              >
                 <View style={styles.topBarSide}>
                   <Pressable
                     onPress={openSidebar}
