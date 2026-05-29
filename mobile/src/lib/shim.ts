@@ -528,8 +528,51 @@ export function generateShimScript(
     // ── Office preview ──────────────────────────────────────────────────
 
     officePreview: {
-      list: function() { return invoke('officePreview:list'); },
-      onUpdate: function(cb) { return subscribe('officePreview:update', cb); },
+      list: function() {
+        return invoke('ui:getState').then(function(state) {
+          return invoke('officePreview:list', {
+            conversationId: state && state.conversationId,
+          });
+        });
+      },
+      start: function(filePath) {
+        return invoke('ui:getState').then(function(state) {
+          return invokeCapability('officePreview.start', 'officePreview:start', {
+            filePath: filePath,
+            conversationId: state && state.conversationId,
+          });
+        });
+      },
+      onUpdate: function(cb) {
+        var stopped = false;
+        var timer = null;
+        var delivered = {};
+        function scan() {
+          if (stopped) return;
+          invoke('ui:getState').then(function(state) {
+            return invoke('officePreview:list', {
+              conversationId: state && state.conversationId,
+            });
+          }).then(function(snapshots) {
+            if (!Array.isArray(snapshots)) return;
+            snapshots.forEach(function(snapshot) {
+              if (!snapshot || !snapshot.sessionId) return;
+              var previous = delivered[snapshot.sessionId] || -1;
+              var updatedAt = typeof snapshot.updatedAt === 'number' ? snapshot.updatedAt : 0;
+              if (previous >= updatedAt) return;
+              delivered[snapshot.sessionId] = updatedAt;
+              try { cb(snapshot); } catch(e) { console.error('[bridge] Listener error:', e); }
+            });
+          }).catch(function() {}).then(function() {
+            if (!stopped) timer = setTimeout(scan, 1000);
+          });
+        }
+        scan();
+        return function() {
+          stopped = true;
+          if (timer) clearTimeout(timer);
+        };
+      },
     },
 
     // ── Media ────────────────────────────────────────────────────────────

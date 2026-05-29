@@ -20,64 +20,88 @@ export type IconName =
   | "mic-off"
   | "check"
   | "image"
+  | "video"
+  | "file"
+  | "file-text"
+  | "git-branch"
+  | "box"
+  | "panel-top"
   | "message-square"
   | "monitor"
   | "cpu"
   | "volume-2"
   | "volume-x"
   | "settings"
+  | "more-horizontal"
   | "user"
   | "stop"
   | "eye"
   | "eye-off";
 
-const FEATHER_NAMES: Record<IconName, React.ComponentProps<typeof Feather>["name"]> = {
-  "menu": "menu",
-  "plus": "plus",
-  "x": "x",
+const FEATHER_NAMES: Record<
+  IconName,
+  React.ComponentProps<typeof Feather>["name"]
+> = {
+  menu: "menu",
+  plus: "plus",
+  x: "x",
   "chevron-down": "chevron-down",
   "chevron-left": "chevron-left",
   "chevron-right": "chevron-right",
   "arrow-up": "arrow-up",
   "arrow-up-right": "arrow-up-right",
-  "mic": "mic",
+  mic: "mic",
   "mic-off": "mic-off",
-  "check": "check",
-  "image": "image",
+  check: "check",
+  image: "image",
+  video: "video",
+  file: "file",
+  "file-text": "file-text",
+  "git-branch": "git-branch",
+  box: "box",
+  "panel-top": "monitor",
   "message-square": "message-square",
-  "monitor": "monitor",
-  "cpu": "cpu",
+  monitor: "monitor",
+  cpu: "cpu",
   "volume-2": "volume-2",
   "volume-x": "volume-x",
-  "settings": "settings",
-  "user": "user",
-  "stop": "square",
-  "eye": "eye",
+  settings: "settings",
+  "more-horizontal": "more-horizontal",
+  user: "user",
+  stop: "square",
+  eye: "eye",
   "eye-off": "eye-off",
 };
 
 const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
-  "menu": "line.3.horizontal",
-  "plus": "plus",
-  "x": "xmark",
+  menu: "line.3.horizontal",
+  plus: "plus",
+  x: "xmark",
   "chevron-down": "chevron.down",
   "chevron-left": "chevron.left",
   "chevron-right": "chevron.right",
   "arrow-up": "arrow.up",
   "arrow-up-right": "arrow.up.right",
-  "mic": "mic",
+  mic: "mic",
   "mic-off": "mic.slash",
-  "check": "checkmark",
-  "image": "photo",
+  check: "checkmark",
+  image: "photo",
+  video: "video",
+  file: "doc",
+  "file-text": "doc.text",
+  "git-branch": "arrow.triangle.branch",
+  box: "cube",
+  "panel-top": "rectangle.topthird.inset.filled",
   "message-square": "message",
-  "monitor": "desktopcomputer",
-  "cpu": "cpu",
+  monitor: "desktopcomputer",
+  cpu: "cpu",
   "volume-2": "speaker.wave.2",
   "volume-x": "speaker.slash",
-  "settings": "gearshape",
-  "user": "person.crop.circle",
-  "stop": "stop.fill",
-  "eye": "eye",
+  settings: "gearshape",
+  "more-horizontal": "ellipsis",
+  user: "person.crop.circle",
+  stop: "stop.fill",
+  eye: "eye",
   "eye-off": "eye.slash",
 };
 
@@ -111,21 +135,47 @@ export function Icon({
     // tack it on for symbols that genuinely have a filled glyph.
     const filledName =
       filled &&
-      (name === "mic" || name === "x" || name === "user" || name === "message-square")
+      (name === "mic" ||
+        name === "x" ||
+        name === "user" ||
+        name === "message-square")
         ? (`${base}.fill` as SymbolViewProps["name"])
         : base;
     return (
-      <View style={[{ width: size, height: size, alignItems: "center", justifyContent: "center" }, style]}>
+      <View
+        style={[
+          {
+            width: size,
+            height: size,
+            alignItems: "center",
+            justifyContent: "center",
+          },
+          style,
+        ]}
+      >
         <SymbolView
           name={filledName}
           size={size}
           tintColor={color}
-          type={tintMode === "hierarchical" ? "hierarchical" : tintMode === "multicolor" ? "multicolor" : "monochrome"}
+          type={
+            tintMode === "hierarchical"
+              ? "hierarchical"
+              : tintMode === "multicolor"
+                ? "multicolor"
+                : "monochrome"
+          }
           weight={weight}
           {...(effect ? { animationSpec: { effect: { type: effect } } } : {})}
         />
       </View>
     );
   }
-  return <Feather name={FEATHER_NAMES[name]} size={size} color={color} style={style} />;
+  return (
+    <Feather
+      name={FEATHER_NAMES[name]}
+      size={size}
+      color={color}
+      style={style}
+    />
+  );
 }

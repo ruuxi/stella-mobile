@@ -28,8 +28,10 @@ import { notifySuccess } from "../../src/lib/haptics";
 import { useComputerModelSettings } from "../../src/lib/use-computer-model-settings";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
-import type { ChatMessage } from "../../src/types";
+import type { ChatArtifact, ChatMessage } from "../../src/types";
 import { ChatPane } from "../../src/components/ChatPane";
+import { ArtifactViewer } from "../../src/components/ArtifactViewer";
+import { ArtifactListSheet } from "../../src/components/ArtifactListSheet";
 import { ComputerSettingsSheet } from "../../src/components/ComputerSettingsSheet";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
 import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
@@ -141,6 +143,10 @@ function AuthenticatedComputerChat() {
   );
   const [pairSheetOpen, setPairSheetOpen] = useState(false);
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(
+    null,
+  );
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
   // One-shot desktop history sync state. `syncing` controls the spinner;
   // `didMountSync` is a guard so the sync runs exactly once per tab landing
   // once the bridge preconditions are ready.
@@ -176,7 +182,10 @@ function AuthenticatedComputerChat() {
             ...message,
             text: normalizeDesktopChatMessageText(message.text),
           }))
-          .filter((message) => message.text.length > 0),
+          .filter(
+            (message) =>
+              message.text.length > 0 || (message.artifacts?.length ?? 0) > 0,
+          ),
       );
       setStorageLoaded(true);
     });
@@ -261,6 +270,14 @@ function AuthenticatedComputerChat() {
           access: phoneAccess,
           message: item.text,
           signal: abort.signal,
+          onArtifacts: (artifacts) => {
+            if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
+            setMessages((m) =>
+              m.map((msg) =>
+                msg.id === replyId ? { ...msg, artifacts } : msg,
+              ),
+            );
+          },
         });
         if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
           activeDispatchRef.current = null;
@@ -270,7 +287,15 @@ function AuthenticatedComputerChat() {
         activeDispatchRef.current = null;
         setMessages((m) =>
           m.map((msg) =>
-            msg.id === replyId ? { ...msg, text: result.text } : msg,
+            msg.id === replyId
+              ? {
+                  ...msg,
+                  text: result.text,
+                  ...(result.artifacts.length > 0
+                    ? { artifacts: result.artifacts }
+                    : {}),
+                }
+              : msg,
           ),
         );
         notifySuccess();
@@ -486,6 +511,21 @@ function AuthenticatedComputerChat() {
   const canSubmit =
     draft.trim().length > 0 && paired === true && Boolean(phoneAccess);
 
+  // All artifacts in the conversation, newest first and de-duplicated, for the
+  // Artifacts list sheet.
+  const conversationArtifacts = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ChatArtifact[] = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      for (const artifact of messages[i].artifacts ?? []) {
+        if (seen.has(artifact.id)) continue;
+        seen.add(artifact.id);
+        out.push(artifact);
+      }
+    }
+    return out;
+  }, [messages]);
+
   return (
     <View style={styles.syncSurface}>
       <ChatPane
@@ -506,6 +546,8 @@ function AuthenticatedComputerChat() {
         onOpenModelSettings={() => setModelSheetOpen(true)}
         dictationAnonymous={false}
         dictationHeaders={dictationHeaders}
+        onOpenArtifact={setSelectedArtifact}
+        onOpenArtifacts={() => setArtifactsOpen(true)}
       />
       {syncing ? (
         <View style={styles.syncOverlay}>
@@ -518,6 +560,18 @@ function AuthenticatedComputerChat() {
         access={phoneAccess}
         catalog={modelSettings.catalog}
         onApplied={modelSettings.syncFromSnapshot}
+      />
+      <ArtifactListSheet
+        visible={artifactsOpen}
+        artifacts={conversationArtifacts}
+        onClose={() => setArtifactsOpen(false)}
+        onSelect={setSelectedArtifact}
+      />
+      <ArtifactViewer
+        visible={Boolean(selectedArtifact)}
+        artifact={selectedArtifact}
+        access={phoneAccess}
+        onClose={() => setSelectedArtifact(null)}
       />
     </View>
   );

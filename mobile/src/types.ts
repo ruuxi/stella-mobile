@@ -1,7 +1,73 @@
+export type MobileDisplayFileArtifactKind =
+  | "office-document"
+  | "office-spreadsheet"
+  | "office-slides"
+  | "delimited-table";
+
+export type MobileMediaAsset =
+  | { kind: "image"; filePaths: string[] }
+  | { kind: "video"; filePath: string }
+  | { kind: "audio"; filePath: string }
+  | { kind: "model3d"; filePath: string; label?: string }
+  | { kind: "download"; filePath: string; label: string }
+  | { kind: "text"; text: string };
+
+export type MobileOfficePreviewRef = {
+  sessionId: string;
+  title: string;
+  sourcePath: string;
+};
+
+export type MobileDisplayPayload =
+  | {
+      kind: "canvas-html";
+      filePath: string;
+      title?: string;
+      slug?: string;
+      createdAt: number;
+    }
+  | { kind: "url"; url: string; title: string; tabId: string; tooltip?: string }
+  | { kind: "office"; previewRef: MobileOfficePreviewRef; title?: string }
+  | {
+      kind: "markdown";
+      filePath: string;
+      title?: string;
+      createdAt?: number;
+    }
+  | {
+      kind: "source-diff";
+      filePath: string;
+      title?: string;
+      patch?: string;
+      createdAt?: number;
+    }
+  | {
+      kind: "file-artifact";
+      filePath: string;
+      artifactKind: MobileDisplayFileArtifactKind;
+      title?: string;
+      createdAt?: number;
+    }
+  | { kind: "pdf"; filePath: string; title?: string }
+  | {
+      kind: "media";
+      asset: MobileMediaAsset;
+      createdAt: number;
+      prompt?: string;
+      capability?: string;
+    };
+
+export type ChatArtifact = {
+  id: string;
+  conversationId: string;
+  payload: MobileDisplayPayload;
+};
+
 export type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
+  artifacts?: ChatArtifact[];
   /** Present when the user attached images (text may be a short label like "Photo"). */
   hasImage?: boolean;
   /**

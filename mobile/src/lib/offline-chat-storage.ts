@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ChatMessage } from "../types";
+import { parseChatArtifacts } from "./mobile-artifacts";
 
 const OFFLINE_STORAGE_KEY = "stella-mobile-offline-chat-v1";
 const COMPUTER_STORAGE_KEY = "stella-mobile-computer-chat-v1";
@@ -22,10 +23,14 @@ function parseRow(row: unknown): ChatMessage | null {
   const thumbnailUris = Array.isArray(o.thumbnailUris)
     ? o.thumbnailUris.filter((v): v is string => typeof v === "string")
     : [];
+  const conversationId =
+    typeof o.conversationId === "string" ? o.conversationId : "";
+  const artifacts = parseChatArtifacts(o.artifacts, conversationId);
   return {
     id: o.id,
     role: o.role,
     text: o.text,
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(o.hasImage === true ? { hasImage: true } : {}),
     ...(thumbnailUris.length > 0 ? { thumbnailUris } : {}),
   };

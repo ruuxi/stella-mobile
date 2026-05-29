@@ -5,7 +5,8 @@ import {
   requestDesktopConnection,
   type StoredPhoneAccess,
 } from "./phone-access";
-import type { ChatMessage } from "../types";
+import type { ChatArtifact, ChatMessage } from "../types";
+import { parseChatArtifacts } from "./mobile-artifacts";
 
 const DESKTOP_WAKE_ATTEMPTS = 8;
 const DESKTOP_WAKE_RETRY_MS = 1_000;
@@ -40,10 +41,12 @@ type DesktopBridgeChatArgs = {
   message: string;
   model?: string | null;
   signal?: AbortSignal;
+  onArtifacts?: (artifacts: ChatArtifact[]) => void;
 };
 
 type DesktopBridgeChatResult = {
   text: string;
+  artifacts: ChatArtifact[];
 };
 
 type PendingResponse = {
@@ -195,10 +198,20 @@ async function listDesktopBridgeMessages(
       const id = asString(record.localMessageId).trim();
       const role = record.role;
       const text = normalizeDesktopChatMessageText(asString(record.text));
-      if (!id || (role !== "user" && role !== "assistant") || !text) {
+      const artifacts = parseChatArtifacts(record.artifacts, conversationId);
+      if (
+        !id ||
+        (role !== "user" && role !== "assistant") ||
+        (!text && artifacts.length === 0)
+      ) {
         return null;
       }
-      return { id, role, text };
+      return {
+        id,
+        role,
+        text,
+        ...(artifacts.length > 0 ? { artifacts } : {}),
+      };
     })
     .filter((message): message is ChatMessage => Boolean(message));
 }
@@ -357,10 +370,10 @@ function createBridgeSocketClient(
   };
 }
 
-async function readLatestAssistantText(
+async function readLatestAssistantMessage(
   bridge: DesktopBridgeConnection,
   conversationId: string,
-): Promise<string> {
+): Promise<ChatMessage | null> {
   const messages = await listDesktopBridgeMessages(
     bridge,
     conversationId,
@@ -368,11 +381,14 @@ async function readLatestAssistantText(
   );
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role === "assistant" && message.text.trim()) {
-      return message.text.trim();
+    if (
+      message?.role === "assistant" &&
+      (message.text.trim() || (message.artifacts?.length ?? 0) > 0)
+    ) {
+      return message;
     }
   }
-  return "";
+  return null;
 }
 
 export async function sendDesktopBridgeChat({
@@ -380,6 +396,7 @@ export async function sendDesktopBridgeChat({
   message,
   model,
   signal,
+  onArtifacts,
 }: DesktopBridgeChatArgs): Promise<DesktopBridgeChatResult> {
   const text = message.trim();
   if (!text) {
@@ -396,6 +413,18 @@ export async function sendDesktopBridgeChat({
     ws.close();
   };
   let cancelRun = () => {};
+  const artifactById = new Map<string, ChatArtifact>();
+  const mergeArtifacts = (artifacts: ChatArtifact[]) => {
+    let changed = false;
+    for (const artifact of artifacts) {
+      if (artifactById.has(artifact.id)) continue;
+      artifactById.set(artifact.id, artifact);
+      changed = true;
+    }
+    if (changed) {
+      onArtifacts?.([...artifactById.values()]);
+    }
+  };
 
   const finish = async (
     resolve: (value: DesktopBridgeChatResult) => void,
@@ -415,18 +444,29 @@ export async function sendDesktopBridgeChat({
       return;
     }
     let finalText = asString(event.finalText).trim();
-    if (!finalText) {
+    let latestAssistant: ChatMessage | null = null;
+    if (!finalText || artifactById.size === 0) {
       try {
-        finalText = await readLatestAssistantText(bridge, conversationId);
+        latestAssistant = await readLatestAssistantMessage(
+          bridge,
+          conversationId,
+        );
       } catch {
-        finalText = "";
+        latestAssistant = null;
       }
     }
+    if (!finalText) {
+      finalText = latestAssistant?.text.trim() ?? "";
+    }
+    mergeArtifacts(latestAssistant?.artifacts ?? []);
     finalText = normalizeDesktopChatMessageText(finalText);
     resolve({
       text:
         finalText ||
-        "Stella finished, but did not return a message. Check the desktop app.",
+        (artifactById.size > 0
+          ? ""
+          : "Stella finished, but did not return a message. Check the desktop app."),
+      artifacts: [...artifactById.values()],
     });
   };
 
@@ -464,6 +504,10 @@ export async function sendDesktopBridgeChat({
         signal?.addEventListener("abort", onAbort);
 
         const socketClient = createBridgeSocketClient(ws, (channel, data) => {
+          if (channel === "display:update") {
+            mergeArtifacts(parseChatArtifacts([data], conversationId));
+            return;
+          }
           if (channel !== "agent:event") return;
           const event = asRecord(data);
           if (!event) return;
@@ -501,6 +545,7 @@ export async function sendDesktopBridgeChat({
           }
         };
         socketClient.subscribe("agent:event");
+        socketClient.subscribe("display:update");
 
         try {
           const startResult = asRecord(

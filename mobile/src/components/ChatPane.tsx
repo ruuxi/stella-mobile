@@ -40,20 +40,18 @@ import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
 import { AssistantMarkdown } from "./AssistantMarkdown";
+import { ArtifactCard } from "./ArtifactCard";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
-import {
-  speakReply,
-  useReadAloudPreference,
-} from "../lib/read-aloud";
+import { speakReply, useReadAloudPreference } from "../lib/read-aloud";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
 import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
-import type { ChatMessage } from "../types";
+import type { ChatArtifact, ChatMessage } from "../types";
 
 // Required for LayoutAnimation on Android.
 if (
@@ -131,9 +129,10 @@ function useKeyboardInset() {
     const hideEvent =
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const onShow = (
-      e: { endCoordinates: { height: number }; duration?: number },
-    ) => {
+    const onShow = (e: {
+      endCoordinates: { height: number };
+      duration?: number;
+    }) => {
       if (Platform.OS === "ios") {
         LayoutAnimation.configureNext({
           duration: e.duration ?? 250,
@@ -216,9 +215,7 @@ function useChatScroll(listTrailingSlackPx: number) {
       const hasOverflow = contentSize.height > layoutMeasurement.height + 2;
       const distFromBottom = Math.max(
         0,
-        contentSize.height -
-          contentOffset.y -
-          layoutMeasurement.height,
+        contentSize.height - contentOffset.y - layoutMeasurement.height,
       );
 
       // Re-arm the follow latch when the user returns to the true tail. The
@@ -236,9 +233,7 @@ function useChatScroll(listTrailingSlackPx: number) {
         stopFollowLoop();
       }
 
-      setAwayFromBottom(
-        hasOverflow && distFromBottom > awayFromBottomLimit,
-      );
+      setAwayFromBottom(hasOverflow && distFromBottom > awayFromBottomLimit);
     },
     [atBottomLimit, awayFromBottomLimit, nearBottomLimit, stopFollowLoop],
   );
@@ -388,10 +383,7 @@ function useChatScroll(listTrailingSlackPx: number) {
   const nudgeAfterSend = useCallback(() => {
     const { offsetY, layoutHeight } = metricsRef.current;
     const contentHeight = contentHeightRef.current;
-    const distFromBottom = Math.max(
-      0,
-      contentHeight - offsetY - layoutHeight,
-    );
+    const distFromBottom = Math.max(0, contentHeight - offsetY - layoutHeight);
     if (distFromBottom > nearBottomLimit) return;
 
     followArmedRef.current = true;
@@ -400,14 +392,14 @@ function useChatScroll(listTrailingSlackPx: number) {
     const applyNudge = () => {
       const metrics = metricsRef.current;
       const height = contentHeightRef.current;
-      const dist = Math.max(
-        0,
-        height - metrics.offsetY - metrics.layoutHeight,
-      );
+      const dist = Math.max(0, height - metrics.offsetY - metrics.layoutHeight);
       if (dist > nearBottomLimit) return;
 
       const maxOffset = Math.max(0, height - metrics.layoutHeight);
-      const newOffset = Math.min(metrics.offsetY + POST_SEND_NUDGE_PX, maxOffset);
+      const newOffset = Math.min(
+        metrics.offsetY + POST_SEND_NUDGE_PX,
+        maxOffset,
+      );
       metricsRef.current.offsetY = newOffset;
       listRef.current?.scrollToOffset({ offset: newOffset, animated: true });
 
@@ -522,12 +514,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
   styles,
   colors,
   isStreaming,
+  onOpenArtifact,
 }: {
   item: ChatMessage;
   styles: ChatStyles;
   colors: Colors;
   /** True for the trailing assistant message while a reply is mid-stream. */
   isStreaming: boolean;
+  onOpenArtifact?: (artifact: ChatArtifact) => void;
 }) {
   if (item.role === "user") {
     const thumbs = item.thumbnailUris ?? [];
@@ -536,10 +530,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return (
       <View style={styles.userRow}>
         <View style={styles.userColumn}>
-          <View style={[styles.userBubble, item.queued && styles.userBubbleQueued]}>
+          <View
+            style={[styles.userBubble, item.queued && styles.userBubbleQueued]}
+          >
             {showThumbs ? (
               <View
-                style={[styles.userThumbStrip, showText && styles.userThumbsAbove]}
+                style={[
+                  styles.userThumbStrip,
+                  showText && styles.userThumbsAbove,
+                ]}
               >
                 {thumbs.slice(0, 3).map((uri) => (
                   <Image
@@ -572,6 +571,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
       </View>
     );
   }
+  const artifacts = item.artifacts ?? [];
+  const hasText = item.text.trim().length > 0;
   return (
     <Pressable
       onLongPress={() => openAssistantActions(item.text)}
@@ -579,11 +580,30 @@ const ChatMessageRow = memo(function ChatMessageRow({
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
     >
-      <AssistantMarkdown
-        text={item.text}
-        colors={colors}
-        isStreaming={isStreaming}
-      />
+      {hasText ? (
+        <AssistantMarkdown
+          text={item.text}
+          colors={colors}
+          isStreaming={isStreaming}
+        />
+      ) : null}
+      {onOpenArtifact && artifacts.length > 0 ? (
+        <View
+          style={[
+            styles.artifactGroup,
+            hasText && styles.artifactGroupSpaced,
+          ]}
+        >
+          {artifacts.map((artifact) => (
+            <ArtifactCard
+              key={artifact.id}
+              artifact={artifact}
+              colors={colors}
+              onPress={onOpenArtifact}
+            />
+          ))}
+        </View>
+      ) : null}
       {item.stopped ? (
         <Text
           style={styles.stoppedTag}
@@ -917,7 +937,10 @@ function PlusMenuPopover({
               minWidth: PLUS_MENU_MIN_WIDTH,
               opacity: measured ? anim : 0,
               top: measured ? top : anchor.y - PLUS_MENU_GAP,
-              transform: [{ translateY: enterTranslateY }, { scale: enterScale }],
+              transform: [
+                { translateY: enterTranslateY },
+                { scale: enterScale },
+              ],
             },
           ]}
         >
@@ -1134,6 +1157,11 @@ export type ChatPaneProps = {
   /** Headers passed to the dictation upload (e.g. mobile device id for guests). */
   dictationAnonymous: boolean;
   dictationHeaders?: Record<string, string>;
+
+  /** Opens a desktop artifact linked from an assistant message. */
+  onOpenArtifact?: (artifact: ChatArtifact) => void;
+  /** Opens the artifacts list sheet from the floating menu. */
+  onOpenArtifacts?: () => void;
 };
 
 export function ChatPane({
@@ -1156,6 +1184,8 @@ export function ChatPane({
   onOpenModelSettings,
   dictationAnonymous,
   dictationHeaders,
+  onOpenArtifact,
+  onOpenArtifacts,
 }: ChatPaneProps) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -1183,8 +1213,7 @@ export function ChatPane({
   const lastMessage = messages[messages.length - 1];
   if (lastMessage?.role === "assistant") {
     const isNewAssistant = lastMessage.id !== assistantIdRef.current;
-    const grewText =
-      lastMessage.text.length > assistantTextLenRef.current;
+    const grewText = lastMessage.text.length > assistantTextLenRef.current;
     if (isNewAssistant) {
       scroll.resetAssistantAutoScroll();
     }
@@ -1247,7 +1276,10 @@ export function ChatPane({
     const latestAssistant = [...messages]
       .reverse()
       .find((message) => message.role === "assistant" && message.text.trim());
-    if (!latestAssistant || spokenAssistantIdsRef.current.has(latestAssistant.id)) {
+    if (
+      !latestAssistant ||
+      spokenAssistantIdsRef.current.has(latestAssistant.id)
+    ) {
       return;
     }
     spokenAssistantIdsRef.current.add(latestAssistant.id);
@@ -1395,6 +1427,14 @@ export function ChatPane({
         onSelect: onViewComputer,
       });
     }
+    if (onOpenArtifacts) {
+      out.push({
+        id: "artifacts",
+        label: "Artifacts",
+        icon: "box",
+        onSelect: onOpenArtifacts,
+      });
+    }
     if (onOpenModelSettings) {
       out.push({
         id: "model-picker",
@@ -1405,7 +1445,7 @@ export function ChatPane({
       });
     }
     return out;
-  }, [onOpenModelSettings, onViewComputer, selectedModelLabel]);
+  }, [onOpenArtifacts, onOpenModelSettings, onViewComputer, selectedModelLabel]);
 
   const floatingAnchorRef = useRef<View>(null);
   const [floatingMenuAnchor, setFloatingMenuAnchor] =
@@ -1420,7 +1460,10 @@ export function ChatPane({
       setFloatingMenuAnchor({ x, y, width, height });
     });
   }, []);
-  const dismissFloatingMenu = useCallback(() => setFloatingMenuAnchor(null), []);
+  const dismissFloatingMenu = useCallback(
+    () => setFloatingMenuAnchor(null),
+    [],
+  );
 
   // Hide the floating button while scrolling up (reading back through
   // history) and bring it back when scrolling down toward the latest.
@@ -1499,11 +1542,18 @@ export function ChatPane({
             styles={styles}
             colors={colors}
             isStreaming={isStreamingAssistant}
+            onOpenArtifact={onOpenArtifact}
           />
         </FadeInMessage>
       );
     },
-    [styles, colors, scroll.onStreamingAssistantLayout, streamingAssistantId],
+    [
+      styles,
+      colors,
+      onOpenArtifact,
+      scroll.onStreamingAssistantLayout,
+      streamingAssistantId,
+    ],
   );
   const renderSeparator = useCallback(
     () => <View style={styles.itemSeparator} />,
@@ -1553,7 +1603,10 @@ export function ChatPane({
           // state never flashes during a tab transition.
           <View style={styles.emptyState} />
         ) : empty ? (
-          <Pressable style={styles.emptyState} onPress={() => Keyboard.dismiss()}>
+          <Pressable
+            style={styles.emptyState}
+            onPress={() => Keyboard.dismiss()}
+          >
             {emptyContent}
           </Pressable>
         ) : (
@@ -1644,8 +1697,8 @@ export function ChatPane({
             >
               <GlassView style={styles.floatingMenuGlass}>
                 <Icon
-                  name="settings"
-                  size={19}
+                  name="more-horizontal"
+                  size={20}
                   color={colors.textMuted}
                   weight="semibold"
                 />
@@ -1661,130 +1714,111 @@ export function ChatPane({
         pointerEvents="box-none"
       >
         <WorkingIndicator active={streaming} />
-        <View style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}>
-        {showAttachmentStrip && (
-          <View style={styles.attachmentStrip}>
-            {(attachments ?? []).map((asset) => (
-              <View key={asset.uri} style={styles.attachmentThumb}>
-                <Image
-                  source={{ uri: asset.uri }}
-                  style={styles.attachmentImage}
-                  contentFit="cover"
-                />
-                <Pressable
-                  style={styles.attachmentRemove}
-                  accessibilityLabel="Remove attached photo"
-                  onPress={() => removeAttachment(asset.uri)}
-                  hitSlop={4}
-                >
-                  <Icon
-                    name="x"
-                    size={12}
-                    color={colors.accentForeground}
-                    weight="bold"
-                  />
-                </Pressable>
-              </View>
-            ))}
-          </View>
-        )}
-
-        <GlassView
-          style={[
-            styles.shell,
-            isExpandedComposed ? styles.shellExpanded : styles.shellPill,
-          ]}
+        <View
+          style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}
         >
-          {dictationInline ? (
-            <View style={styles.formPill}>
-              {plusButton}
-              <DictationRecordingBar
-                levels={dictation.levels}
-                elapsedMs={dictation.elapsedMs}
-                onCancel={() => void dictation.cancel()}
-                onConfirm={() => void dictation.stop()}
-              />
-            </View>
-          ) : (
-            // Single TextInput, stable JSX position across pill ⇄ expanded so
-            // React reuses the same native UITextView when the shape swaps.
-            // Swapping between two separate <TextInput> instances dropped
-            // focus, which collapsed and re-summoned the keyboard on every
-            // expand — visible as a flicker whenever a line wrapped.
-            <View>
-              <View
-                style={
-                  isExpandedComposed ? styles.expandedInputBlock : styles.formPill
-                }
-              >
-                {isExpandedComposed ? null : plusButton}
-                <TextInput
-                  ref={inputRef}
-                  multiline
-                  scrollEnabled={isExpandedComposed}
-                  onChangeText={onChangeDraft}
-                  onContentSizeChange={handleContentSizeChange}
-                  blurOnSubmit={false}
-                  placeholder={
-                    isExpandedComposed
-                      ? placeholder
-                      : dictation.isTranscribing
-                        ? "Transcribing\u2026"
-                        : placeholder
-                  }
-                  placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
-                  selectionColor={colors.accent}
-                  underlineColorAndroid="transparent"
-                  style={
-                    isExpandedComposed ? styles.inputExpanded : styles.inputPill
-                  }
-                  value={draft}
-                  editable={composerEnabled}
-                />
-                {isExpandedComposed ? null : streaming && onStop && !hasText ? (
-                  <StopButton
-                    onPress={onStop}
-                    styles={styles}
-                    colors={colors}
+          {showAttachmentStrip && (
+            <View style={styles.attachmentStrip}>
+              {(attachments ?? []).map((asset) => (
+                <View key={asset.uri} style={styles.attachmentThumb}>
+                  <Image
+                    source={{ uri: asset.uri }}
+                    style={styles.attachmentImage}
+                    contentFit="cover"
                   />
-                ) : canSubmit ? (
-                  <AnimatedSubmitButton
-                    canSubmit={canSubmit}
-                    onPress={submit}
-                    styles={styles}
-                    colors={colors}
-                    accessibilityLabel={
-                      streaming ? "Queue follow-up message" : "Send message"
-                    }
-                  />
-                ) : (
                   <Pressable
-                    onPress={() => void toggleVoice()}
-                    accessibilityLabel={
-                      isListening ? "Stop voice input" : "Start voice input"
-                    }
-                    disabled={dictation.isTranscribing}
-                    style={[
-                      styles.micButton,
-                      isListening && styles.micButtonActive,
-                    ]}
+                    style={styles.attachmentRemove}
+                    accessibilityLabel="Remove attached photo"
+                    onPress={() => removeAttachment(asset.uri)}
                     hitSlop={4}
                   >
                     <Icon
-                      name={isListening ? "mic-off" : "mic"}
-                      size={20}
-                      color={
-                        isListening ? colors.accentForeground : colors.textMuted
-                      }
-                      filled={isListening}
+                      name="x"
+                      size={12}
+                      color={colors.accentForeground}
+                      weight="bold"
                     />
                   </Pressable>
-                )}
+                </View>
+              ))}
+            </View>
+          )}
+
+          <GlassView
+            style={[
+              styles.shell,
+              isExpandedComposed ? styles.shellExpanded : styles.shellPill,
+            ]}
+          >
+            {dictationInline ? (
+              <View style={styles.formPill}>
+                {plusButton}
+                <DictationRecordingBar
+                  levels={dictation.levels}
+                  elapsedMs={dictation.elapsedMs}
+                  onCancel={() => void dictation.cancel()}
+                  onConfirm={() => void dictation.stop()}
+                />
               </View>
-              {isExpandedComposed ? (
-                <View style={styles.toolbar}>
-                  <View style={styles.toolbarLeft}>{plusButton}</View>
-                  <View style={styles.toolbarRight}>
+            ) : (
+              // Single TextInput, stable JSX position across pill ⇄ expanded so
+              // React reuses the same native UITextView when the shape swaps.
+              // Swapping between two separate <TextInput> instances dropped
+              // focus, which collapsed and re-summoned the keyboard on every
+              // expand — visible as a flicker whenever a line wrapped.
+              <View>
+                <View
+                  style={
+                    isExpandedComposed
+                      ? styles.expandedInputBlock
+                      : styles.formPill
+                  }
+                >
+                  {isExpandedComposed ? null : plusButton}
+                  <TextInput
+                    ref={inputRef}
+                    multiline
+                    scrollEnabled={isExpandedComposed}
+                    onChangeText={onChangeDraft}
+                    onContentSizeChange={handleContentSizeChange}
+                    blurOnSubmit={false}
+                    placeholder={
+                      isExpandedComposed
+                        ? placeholder
+                        : dictation.isTranscribing
+                          ? "Transcribing\u2026"
+                          : placeholder
+                    }
+                    placeholderTextColor={fadeHex(colors.textMuted, 0.35)}
+                    selectionColor={colors.accent}
+                    underlineColorAndroid="transparent"
+                    style={
+                      isExpandedComposed
+                        ? styles.inputExpanded
+                        : styles.inputPill
+                    }
+                    value={draft}
+                    editable={composerEnabled}
+                  />
+                  {isExpandedComposed ? null : streaming &&
+                    onStop &&
+                    !hasText ? (
+                    <StopButton
+                      onPress={onStop}
+                      styles={styles}
+                      colors={colors}
+                    />
+                  ) : canSubmit ? (
+                    <AnimatedSubmitButton
+                      canSubmit={canSubmit}
+                      onPress={submit}
+                      styles={styles}
+                      colors={colors}
+                      accessibilityLabel={
+                        streaming ? "Queue follow-up message" : "Send message"
+                      }
+                    />
+                  ) : (
                     <Pressable
                       onPress={() => void toggleVoice()}
                       accessibilityLabel={
@@ -1808,41 +1842,70 @@ export function ChatPane({
                         filled={isListening}
                       />
                     </Pressable>
-                    {streaming && onStop && !hasText ? (
-                      <StopButton
-                        onPress={onStop}
-                        styles={styles}
-                        colors={colors}
-                      />
-                    ) : (
-                      <AnimatedSubmitButton
-                        canSubmit={canSubmit}
-                        onPress={submit}
-                        styles={styles}
-                        colors={colors}
+                  )}
+                </View>
+                {isExpandedComposed ? (
+                  <View style={styles.toolbar}>
+                    <View style={styles.toolbarLeft}>{plusButton}</View>
+                    <View style={styles.toolbarRight}>
+                      <Pressable
+                        onPress={() => void toggleVoice()}
                         accessibilityLabel={
-                          streaming
-                            ? "Queue follow-up message"
-                            : "Send message"
+                          isListening ? "Stop voice input" : "Start voice input"
                         }
-                      />
-                    )}
+                        disabled={dictation.isTranscribing}
+                        style={[
+                          styles.micButton,
+                          isListening && styles.micButtonActive,
+                        ]}
+                        hitSlop={4}
+                      >
+                        <Icon
+                          name={isListening ? "mic-off" : "mic"}
+                          size={20}
+                          color={
+                            isListening
+                              ? colors.accentForeground
+                              : colors.textMuted
+                          }
+                          filled={isListening}
+                        />
+                      </Pressable>
+                      {streaming && onStop && !hasText ? (
+                        <StopButton
+                          onPress={onStop}
+                          styles={styles}
+                          colors={colors}
+                        />
+                      ) : (
+                        <AnimatedSubmitButton
+                          canSubmit={canSubmit}
+                          onPress={submit}
+                          styles={styles}
+                          colors={colors}
+                          accessibilityLabel={
+                            streaming
+                              ? "Queue follow-up message"
+                              : "Send message"
+                          }
+                        />
+                      )}
+                    </View>
                   </View>
-                </View>
-              ) : null}
-              {dictationBelow ? (
-                <View style={styles.dictationRow}>
-                  <DictationRecordingBar
-                    levels={dictation.levels}
-                    elapsedMs={dictation.elapsedMs}
-                    onCancel={() => void dictation.cancel()}
-                    onConfirm={() => void dictation.stop()}
-                  />
-                </View>
-              ) : null}
-            </View>
-          )}
-        </GlassView>
+                ) : null}
+                {dictationBelow ? (
+                  <View style={styles.dictationRow}>
+                    <DictationRecordingBar
+                      levels={dictation.levels}
+                      elapsedMs={dictation.elapsedMs}
+                      onCancel={() => void dictation.cancel()}
+                      onConfirm={() => void dictation.stop()}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            )}
+          </GlassView>
         </View>
       </View>
       <PlusMenuPopover
@@ -2011,6 +2074,8 @@ const makeStyles = (colors: Colors) =>
     },
 
     assistantRow: { paddingVertical: 4 },
+    artifactGroup: { gap: 10 },
+    artifactGroupSpaced: { marginTop: 10 },
     assistantText: {
       color: colors.text,
       fontFamily: fonts.sans.regular,
