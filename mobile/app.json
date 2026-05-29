@@ -3,7 +3,7 @@
     "owner": "stella-ai",
     "name": "Stella",
     "slug": "stella-mobile",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "scheme": "stella-mobile",
     "icon": "./assets/icon.png",
@@ -15,7 +15,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.stella.mobile",
-      "buildNumber": "10",
+      "buildNumber": "51",
       "supportsTablet": true,
       "usesAppleSignIn": true,
       "infoPlist": {
