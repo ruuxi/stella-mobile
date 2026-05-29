@@ -8,8 +8,9 @@
  * correctly (per CommonMark spec), so we don't need the string-level
  * shimming the previous markdown-it-based renderer required.
  *
- * The mobile chat dispatcher (`chat.tsx`) already coalesces stream deltas
- * at ~33 ms, so per-frame `session.append` cost is bounded.
+ * The mobile chat dispatcher (`chat.tsx`) smooths raw provider deltas into
+ * small cadence-based text updates, so parser work stays bounded and visible
+ * text does not inherit upstream token burst timing.
  *
  * Stream fade reveal lives in `StreamingMarkdownText.tsx` as a custom
  * `text` renderer; we attach it only for messages that ever streamed in

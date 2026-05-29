@@ -9,6 +9,7 @@ import { postStream, postStreamAnonymous, StreamAbortError } from "../../src/lib
 import { hasAiConsent, requestAiConsent } from "../../src/lib/ai-consent";
 import { isGuest } from "../../src/lib/guest-mode";
 import { getOrCreateMobileDeviceId } from "../../src/lib/phone-access";
+import { createStreamTextSmoother } from "../../src/lib/stream-text-smoother";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
 import { useColors } from "../../src/theme/theme-context";
@@ -138,30 +139,29 @@ export default function ChatScreen() {
       const replyId = createId();
       setMessages((m) => [...m, { id: replyId, role: "assistant", text: "" }]);
 
-      // Coalesce token-by-token deltas into one render per ~33ms so the JS
-      // thread isn't pinned (which would starve rAF and freeze the WebGL
-      // working indicator above the composer).
-      let pendingDelta = "";
-      let flushScheduled = false;
-      const flush = () => {
-        flushScheduled = false;
-        if (!pendingDelta) return;
-        const chunk = pendingDelta;
-        pendingDelta = "";
+      // Reveal provider chunks at a fixed cadence so the visible text grows
+      // smoothly even when upstream tokens arrive in uneven bursts.
+      const textSmoother = createStreamTextSmoother({
+        appendText: (chunk) => {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
+            ),
+          );
+        },
+      });
+      const onDelta = (delta: string) => {
+        textSmoother.push(delta);
+      };
+
+      const ensureFallbackReply = () => {
         setMessages((m) =>
           m.map((msg) =>
-            msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
+            msg.id === replyId && !msg.text
+              ? { ...msg, text: "No reply came back. Try again." }
+              : msg,
           ),
         );
-      };
-      const scheduleFlush = () => {
-        if (flushScheduled) return;
-        flushScheduled = true;
-        setTimeout(flush, 33);
-      };
-      const onDelta = (delta: string) => {
-        pendingDelta += delta;
-        scheduleFlush();
       };
 
       const streamFn = guest ? postStreamAnonymous : postStream;
@@ -187,18 +187,12 @@ export default function ChatScreen() {
           onDelta,
           streamOptions,
         );
-        flush();
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === replyId && !msg.text
-              ? { ...msg, text: "No reply came back. Try again." }
-              : msg,
-          ),
-        );
+        await textSmoother.drain();
+        ensureFallbackReply();
         notifySuccess();
       } catch (e) {
-        flush();
         if (e instanceof StreamAbortError) {
+          textSmoother.cancel();
           // Stop pressed — mark the reply row as stopped (keep any partial
           // text the user had already seen) and let the queue drain be
           // suppressed by the `stop()` handler that initiated the abort.
@@ -210,6 +204,7 @@ export default function ChatScreen() {
             ),
           );
         } else {
+          textSmoother.flushNow();
           setMessages((m) =>
             m.map((msg) =>
               msg.id === replyId
@@ -219,6 +214,7 @@ export default function ChatScreen() {
           );
         }
       } finally {
+        textSmoother.cancel();
         if (abortRef.current === controller) abortRef.current = null;
         setSending(false);
         // Drain the next queued send — but only if the user didn't press

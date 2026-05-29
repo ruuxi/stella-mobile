@@ -100,16 +100,14 @@ const LAYOUT_SPRING = {
 const SCROLL_NEAR_BOTTOM_BASE_PX = 96;
 /** Base distance before showing the scroll-to-bottom FAB (plus trailing slack). */
 const SCROLL_AWAY_FROM_BOTTOM_BASE_PX = 96;
-/** Re-arm capped auto-follow once the user scrolls back to the true bottom. */
+/** Re-arm stream auto-follow once the user scrolls back to the true bottom. */
 const SCROLL_AT_BOTTOM_THRESHOLD = 8;
 /** Small upward nudge after send so the user bubble clears room for the reply. */
 const POST_SEND_NUDGE_PX = 128;
-/** Desktop-matched stream-follow lerp: smooth for normal deltas, quick for bursts. */
-const FOLLOW_LERP_FACTOR_BASE = 0.3;
-const FOLLOW_LERP_FACTOR_MAX = 0.65;
-const FOLLOW_LERP_FACTOR_SCALE = 0.005;
+/** Native animation guard so stream-follow lag is not mistaken for scrollback. */
+const FOLLOW_NATIVE_ANIMATION_GUARD_MS = 320;
 const FOLLOW_HARD_SNAP_PX = 240;
-const FOLLOW_MIN_STEP_PX = 0.5;
+const FOLLOW_TARGET_EPSILON_PX = 0.5;
 const FOLLOW_TOP_PEEK_PX = 56;
 
 const EDGE_FADE = 48;
@@ -173,7 +171,7 @@ function useKeyboardInset() {
 }
 
 // ---------------------------------------------------------------------------
-// Scroll — manual by default; capped auto-follow while assistant streams in
+// Scroll — manual by default; smooth auto-follow while assistant streams in
 // near the bottom.
 // ---------------------------------------------------------------------------
 
@@ -189,6 +187,7 @@ function useChatScroll(listTrailingSlackPx: number) {
   const followArmedRef = useRef(true);
   const followTargetOffsetRef = useRef<number | null>(null);
   const followRafRef = useRef(0);
+  const followAnimatingUntilMsRef = useRef(0);
   const streamingAssistantHeightRef = useRef(0);
   /** Content height before the next assistant-driven layout pass. */
   const assistantLayoutBaselineRef = useRef<number | null>(null);
@@ -199,6 +198,7 @@ function useChatScroll(listTrailingSlackPx: number) {
       followRafRef.current = 0;
     }
     followTargetOffsetRef.current = null;
+    followAnimatingUntilMsRef.current = 0;
   }, []);
 
   useEffect(() => () => stopFollowLoop(), [stopFollowLoop]);
@@ -221,13 +221,17 @@ function useChatScroll(listTrailingSlackPx: number) {
           layoutMeasurement.height,
       );
 
-      // Re-arm the follow latch (not the per-reply budget!) when the user
-      // returns into the reading zone — the budget should only reset on real
-      // lifecycle events (new assistant message, manual scroll-to-bottom), or
-      // every auto-scroll tick would zero it out via the trailing-slack band.
+      // Re-arm the follow latch when the user returns to the true tail. The
+      // wider near-bottom band can still follow while armed, but it should not
+      // re-enable follow after an intentional scrollback.
       if (distFromBottom <= atBottomLimit) {
         followArmedRef.current = true;
-      } else if (distFromBottom > nearBottomLimit) {
+      } else if (
+        distFromBottom > nearBottomLimit &&
+        followTargetOffsetRef.current === null &&
+        !followRafRef.current &&
+        Date.now() > followAnimatingUntilMsRef.current
+      ) {
         followArmedRef.current = false;
         stopFollowLoop();
       }
@@ -242,6 +246,12 @@ function useChatScroll(listTrailingSlackPx: number) {
   const resetAssistantAutoScroll = useCallback(() => {
     followArmedRef.current = true;
     assistantLayoutBaselineRef.current = null;
+    streamingAssistantHeightRef.current = 0;
+    stopFollowLoop();
+  }, [stopFollowLoop]);
+
+  const releaseFollow = useCallback(() => {
+    followArmedRef.current = false;
     stopFollowLoop();
   }, [stopFollowLoop]);
 
@@ -250,8 +260,7 @@ function useChatScroll(listTrailingSlackPx: number) {
     assistantLayoutBaselineRef.current = contentHeightRef.current;
   }, []);
 
-  const stepFollowLoop = useCallback((now: number) => {
-    void now;
+  const flushFollowTarget = useCallback(() => {
     followRafRef.current = 0;
 
     const rawTarget = followTargetOffsetRef.current;
@@ -262,62 +271,33 @@ function useChatScroll(listTrailingSlackPx: number) {
 
     const { offsetY, layoutHeight } = metricsRef.current;
     const contentHeight = contentHeightRef.current;
-    const distFromBottom = Math.max(
-      0,
-      contentHeight - offsetY - layoutHeight,
-    );
-    if (distFromBottom > nearBottomLimit) {
-      followTargetOffsetRef.current = null;
-      return;
-    }
-
     const maxOffset = Math.max(0, contentHeight - layoutHeight);
     const target = Math.max(0, Math.min(maxOffset, rawTarget));
-    const diff = target - offsetY;
-    const absDiff = Math.abs(diff);
 
-    if (absDiff < FOLLOW_MIN_STEP_PX) {
-      metricsRef.current.offsetY = target;
-      listRef.current?.scrollToOffset({ offset: target, animated: false });
+    if (target <= offsetY + FOLLOW_TARGET_EPSILON_PX) {
       followTargetOffsetRef.current = null;
       return;
     }
 
-    const newOffset =
-      absDiff > FOLLOW_HARD_SNAP_PX
-        ? target
-        : offsetY +
-          (Math.abs(diff * Math.min(
-            FOLLOW_LERP_FACTOR_MAX,
-            FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
-          )) >= FOLLOW_MIN_STEP_PX
-            ? diff * Math.min(
-                FOLLOW_LERP_FACTOR_MAX,
-                FOLLOW_LERP_FACTOR_BASE + absDiff * FOLLOW_LERP_FACTOR_SCALE,
-              )
-            : Math.sign(diff) * FOLLOW_MIN_STEP_PX);
-
-    metricsRef.current.offsetY = newOffset;
-    listRef.current?.scrollToOffset({ offset: newOffset, animated: false });
+    const absDiff = Math.abs(target - offsetY);
+    followTargetOffsetRef.current = null;
+    followAnimatingUntilMsRef.current =
+      Date.now() + FOLLOW_NATIVE_ANIMATION_GUARD_MS;
+    metricsRef.current.offsetY = target;
+    listRef.current?.scrollToOffset({
+      offset: target,
+      animated: absDiff <= FOLLOW_HARD_SNAP_PX,
+    });
 
     const nextDistFromBottom = Math.max(
       0,
-      contentHeight - newOffset - layoutHeight,
+      contentHeight - target - layoutHeight,
     );
     setAwayFromBottom(
       contentHeight > layoutHeight + 2 &&
         nextDistFromBottom > awayFromBottomLimit,
     );
-
-    if (newOffset === target || absDiff > FOLLOW_HARD_SNAP_PX) {
-      followTargetOffsetRef.current = null;
-      return;
-    }
-
-    if (followTargetOffsetRef.current !== null && followArmedRef.current) {
-      followRafRef.current = requestAnimationFrame(stepFollowLoop);
-    }
-  }, [awayFromBottomLimit, nearBottomLimit]);
+  }, [awayFromBottomLimit]);
 
   const setFollowTarget = useCallback(
     (target: number) => {
@@ -325,22 +305,23 @@ function useChatScroll(listTrailingSlackPx: number) {
 
       const { offsetY, layoutHeight } = metricsRef.current;
       const contentHeight = contentHeightRef.current;
-      const distFromBottom = Math.max(
-        0,
-        contentHeight - offsetY - layoutHeight,
-      );
-      if (distFromBottom > nearBottomLimit) return;
-
       const maxOffset = Math.max(0, contentHeight - layoutHeight);
       const clamped = Math.max(0, Math.min(maxOffset, target));
-      if (clamped <= offsetY + 0.5) return;
+      const pendingTarget = followTargetOffsetRef.current;
+      if (
+        clamped <= offsetY + FOLLOW_TARGET_EPSILON_PX &&
+        pendingTarget === null
+      ) {
+        return;
+      }
 
-      followTargetOffsetRef.current = clamped;
+      followTargetOffsetRef.current =
+        pendingTarget === null ? clamped : Math.max(pendingTarget, clamped);
       if (!followRafRef.current) {
-        followRafRef.current = requestAnimationFrame(stepFollowLoop);
+        followRafRef.current = requestAnimationFrame(flushFollowTarget);
       }
     },
-    [nearBottomLimit, stepFollowLoop],
+    [flushFollowTarget],
   );
 
   const followActiveAssistantRow = useCallback(() => {
@@ -365,6 +346,12 @@ function useChatScroll(listTrailingSlackPx: number) {
     },
     [followActiveAssistantRow],
   );
+
+  const clearStreamingAssistantLayout = useCallback(() => {
+    streamingAssistantHeightRef.current = 0;
+    assistantLayoutBaselineRef.current = null;
+    stopFollowLoop();
+  }, [stopFollowLoop]);
 
   const onListContentSizeChange = useCallback(
     (_width: number, height: number) => {
@@ -438,10 +425,11 @@ function useChatScroll(listTrailingSlackPx: number) {
     onScroll,
     onListContentSizeChange,
     onStreamingAssistantLayout,
+    clearStreamingAssistantLayout,
     scrollToBottom,
     resetAssistantAutoScroll,
     prepareAssistantLayoutFollow,
-    releaseFollow: stopFollowLoop,
+    releaseFollow,
     nudgeAfterSend,
     awayFromBottom,
   };
@@ -451,7 +439,13 @@ function useChatScroll(listTrailingSlackPx: number) {
 // Animated message wrapper — mirrors desktop stream-fade-blur-in.
 // ---------------------------------------------------------------------------
 
-function FadeInMessage({ children }: { children: ReactNode }) {
+function FadeInMessage({
+  children,
+  onLayout,
+}: {
+  children: ReactNode;
+  onLayout?: (event: LayoutChangeEvent) => void;
+}) {
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(5)).current;
 
@@ -477,7 +471,11 @@ function FadeInMessage({ children }: { children: ReactNode }) {
     ]).start();
   }, [opacity, translateY]);
 
-  return <Animated.View style={animatedStyle}>{children}</Animated.View>;
+  return (
+    <Animated.View onLayout={onLayout} style={animatedStyle}>
+      {children}
+    </Animated.View>
+  );
 }
 
 const copyAssistantMessage = (text: string) => {
@@ -1501,18 +1499,32 @@ export function ChatPane({
   // through the brief render where `streaming` flips false at end-of-turn.
   const streamingAssistantId =
     streaming && lastMessage?.role === "assistant" ? lastMessage.id : null;
+  useEffect(() => {
+    if (!streamingAssistantId) {
+      scroll.clearStreamingAssistantLayout();
+    }
+  }, [streamingAssistantId, scroll.clearStreamingAssistantLayout]);
+
   const renderItem = useCallback(
-    ({ item }: LegendListRenderItemProps<ChatMessage>) => (
-      <FadeInMessage key={item.id}>
-        <ChatMessageRow
-          item={item}
-          styles={styles}
-          colors={colors}
-          isStreaming={item.id === streamingAssistantId}
-        />
-      </FadeInMessage>
-    ),
-    [styles, colors, streamingAssistantId],
+    ({ item }: LegendListRenderItemProps<ChatMessage>) => {
+      const isStreamingAssistant = item.id === streamingAssistantId;
+      return (
+        <FadeInMessage
+          key={item.id}
+          onLayout={
+            isStreamingAssistant ? scroll.onStreamingAssistantLayout : undefined
+          }
+        >
+          <ChatMessageRow
+            item={item}
+            styles={styles}
+            colors={colors}
+            isStreaming={isStreamingAssistant}
+          />
+        </FadeInMessage>
+      );
+    },
+    [styles, colors, scroll.onStreamingAssistantLayout, streamingAssistantId],
   );
   const renderSeparator = useCallback(
     () => <View style={styles.itemSeparator} />,
@@ -1577,6 +1589,7 @@ export function ChatPane({
               getItemType={getItemType}
               ItemSeparatorComponent={renderSeparator}
               onScroll={handleListScroll}
+              onScrollBeginDrag={scroll.releaseFollow}
               onContentSizeChange={scroll.onListContentSizeChange}
               scrollEventThrottle={16}
               showsVerticalScrollIndicator={false}
@@ -1592,8 +1605,8 @@ export function ChatPane({
               maintainVisibleContentPosition
               // Pin to the tail only when new/synced messages arrive while the
               // user is already near the bottom. Scoped to data changes so it
-              // doesn't fight the custom budgeted streaming-follow loop, which
-              // owns item-layout/size growth.
+              // doesn't fight the custom streaming-follow target updates,
+              // which own item-layout/size growth.
               maintainScrollAtEnd={{
                 animated: false,
                 on: { dataChange: true, itemLayout: false, layout: false },
