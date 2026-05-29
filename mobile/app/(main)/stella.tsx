@@ -38,6 +38,16 @@ import { fonts } from "../../src/theme/fonts";
 
 type MobileBridgeBootstrap = {
   localStorage: Record<string, string>;
+  mobileBridgeCapabilities?: {
+    version: number;
+    capabilities: Array<{
+      mode: string;
+      path: string;
+      channel?: string;
+      transport?: string;
+      reason?: string;
+    }>;
+  };
 };
 
 const EMPTY_BRIDGE_BOOTSTRAP: MobileBridgeBootstrap = { localStorage: {} };

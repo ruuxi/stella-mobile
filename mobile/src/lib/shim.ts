@@ -13,9 +13,25 @@
  * Desktop-only features (window chrome, screenshots, overlays, radial menu)
  * are stubbed as no-ops so the frontend never crashes.
  */
+type MobileBridgeCapability = {
+  mode: string;
+  path: string;
+  channel?: string;
+  transport?: string;
+  reason?: string;
+};
+
+type MobileBridgeBootstrap = {
+  localStorage: Record<string, string>;
+  mobileBridgeCapabilities?: {
+    version: number;
+    capabilities: MobileBridgeCapability[];
+  };
+};
+
 export function generateShimScript(
   bridgeUrl: string,
-  bootstrap: { localStorage: Record<string, string> },
+  bootstrap: MobileBridgeBootstrap,
 ): string {
   const bridgeUrlJson = JSON.stringify(bridgeUrl);
   const bootstrapJson = JSON.stringify(bootstrap);
@@ -63,6 +79,12 @@ export function generateShimScript(
   var wsQueue = [];
   var responseCallbacks = new Map();
   var subscriptions = new Map();
+  var bridgeCapabilities = (
+    __bootstrap &&
+    __bootstrap.mobileBridgeCapabilities &&
+    Array.isArray(__bootstrap.mobileBridgeCapabilities.capabilities)
+  ) ? __bootstrap.mobileBridgeCapabilities.capabilities : [];
+  var hasCapabilityManifest = bridgeCapabilities.length > 0;
 
   var wsReconnectDelay = 1000;
 
@@ -192,6 +214,116 @@ export function generateShimScript(
     };
   }
 
+  function findCapability(path, mode) {
+    for (var i = 0; i < bridgeCapabilities.length; i++) {
+      var capability = bridgeCapabilities[i];
+      if (capability && capability.path === path && capability.mode === mode) {
+        return capability;
+      }
+    }
+    return null;
+  }
+
+  function unsupportedCapabilityError(path) {
+    var capability = null;
+    for (var i = 0; i < bridgeCapabilities.length; i++) {
+      if (bridgeCapabilities[i] && bridgeCapabilities[i].path === path) {
+        capability = bridgeCapabilities[i];
+        break;
+      }
+    }
+    var reason = capability && capability.reason ? ': ' + capability.reason : '';
+    return new Error('Stella desktop capability is not available on mobile: ' + path + reason);
+  }
+
+  function invokeCapability(path, fallbackChannel) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    var capability = findCapability(path, 'remote-request');
+    var channel = capability && capability.channel;
+    if (!channel && !hasCapabilityManifest) {
+      channel = fallbackChannel;
+    }
+    if (!channel) {
+      return Promise.reject(unsupportedCapabilityError(path));
+    }
+    return invoke.apply(null, [channel].concat(args));
+  }
+
+  function fireCapability(path, fallbackChannel) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    var capability = findCapability(path, 'remote-request');
+    var channel = capability && capability.channel;
+    if (!channel && !hasCapabilityManifest) {
+      channel = fallbackChannel;
+    }
+    if (!channel) {
+      console.warn(unsupportedCapabilityError(path).message);
+      return;
+    }
+    if (capability && capability.transport === 'invoke') {
+      invoke.apply(null, [channel].concat(args)).catch(function(error) {
+        console.warn('[stella-bridge] Failed capability invoke:', error && error.message ? error.message : error);
+      });
+      return;
+    }
+    fire.apply(null, [channel].concat(args));
+  }
+
+  function subscribeCapability(path, fallbackChannel, cb) {
+    var capability = findCapability(path, 'remote-event');
+    var channel = capability && capability.channel;
+    if (!channel && !hasCapabilityManifest) {
+      channel = fallbackChannel;
+    }
+    if (!channel) {
+      console.warn(unsupportedCapabilityError(path).message);
+      return noop;
+    }
+    return subscribe(channel, cb);
+  }
+
+  function setApiPath(root, path, value) {
+    var parts = path.split('.');
+    var target = root;
+    for (var i = 0; i < parts.length - 1; i++) {
+      var part = parts[i];
+      if (!target[part] || typeof target[part] !== 'object') {
+        target[part] = {};
+      }
+      target = target[part];
+    }
+    var leaf = parts[parts.length - 1];
+    if (typeof target[leaf] !== 'function') {
+      target[leaf] = value;
+    }
+  }
+
+  function installRemoteCapabilities(root) {
+    for (var i = 0; i < bridgeCapabilities.length; i++) {
+      var capability = bridgeCapabilities[i];
+      if (!capability || !capability.path || !capability.channel) continue;
+      if (capability.mode === 'remote-request') {
+        setApiPath(root, capability.path, (function(cap) {
+          return function() {
+            var args = Array.prototype.slice.call(arguments);
+            if (cap.transport === 'send') {
+              fire.apply(null, [cap.channel].concat(args));
+              return;
+            }
+            return invoke.apply(null, [cap.channel].concat(args));
+          };
+        })(capability));
+      }
+      if (capability.mode === 'remote-event') {
+        setApiPath(root, capability.path, (function(cap) {
+          return function(cb) {
+            return subscribe(cap.channel, cb);
+          };
+        })(capability));
+      }
+    }
+  }
+
   // ── Stubs ─────────────────────────────────────────────────────────────
 
   function noop() {}
@@ -218,6 +350,12 @@ export function generateShimScript(
 
     display: {
       onUpdate: function(cb) { return subscribe('display:update', cb); },
+      readFile: function(filePath, options) {
+        return invokeCapability('display.readFile', 'display:readFile', {
+          filePath: filePath,
+          conversationId: options && options.conversationId,
+        });
+      },
     },
 
     // ── UI state ────────────────────────────────────────────────────────
@@ -301,8 +439,10 @@ export function generateShimScript(
       getActiveRun: function() { return invoke('agent:getActiveRun'); },
       getAppSessionStartedAt: function() { return invoke('agent:getAppSessionStartedAt'); },
       startChat: function(p) { return invoke('agent:startChat', p); },
+      sendInput: function(p) { return invokeCapability('agent.sendInput', 'agent:sendInput', p); },
       cancelChat: function(runId) { fire('agent:cancelChat', runId); },
       resumeStream: function(p) { return invoke('agent:resume', p); },
+      resumeConversationExecution: function(p) { return invokeCapability('agent.resumeConversationExecution', 'agent:resume', p); },
       onStream: function(cb) { return subscribe('agent:event', cb); },
       onSelfModHmrState: function(cb) { return subscribe('agent:selfModHmrState', cb); },
       selfModRevert: function(fid, steps) { return invoke('selfmod:revert', { featureId: fid, steps: steps }); },
@@ -335,8 +475,8 @@ export function generateShimScript(
       setCloudSyncEnabled: function() { return resolved(); },
       onAuthCallback: noopSub,
       openFullDiskAccess: noop,
-      getPermissionStatus: function() { return resolved({ accessibility: false, screen: false }); },
-      openPermissionSettings: function() { return resolved(); },
+      getPermissionStatus: function() { return invokeCapability('system.getPermissionStatus', 'permissions:getStatus'); },
+      openPermissionSettings: function(kind) { return invokeCapability('system.openPermissionSettings', 'permissions:openSettings', { kind: kind }); },
       openExternal: function(url) {
         postNativeMessage({ type: 'openExternal', url: url });
       },
@@ -346,10 +486,10 @@ export function generateShimScript(
       setLocalSyncMode: function(m) { return invoke('preferences:setSyncMode', m); },
       getRadialTriggerKey: function() { return resolved('option'); },
       setRadialTriggerKey: function(k) { return resolved({ triggerKey: k }); },
-      syncLocalModelPreferences: function(p) { return invoke('preferences:syncLocalModelPreferences', p); },
-      listLlmCredentials: function() { return invoke('llmCredentials:list'); },
-      saveLlmCredential: function(p) { return invoke('llmCredentials:save', p); },
-      deleteLlmCredential: function(p) { return invoke('llmCredentials:delete', p); },
+      syncLocalModelPreferences: function(p) { return invokeCapability('system.syncLocalModelPreferences', 'preferences:setLocalModelPreferences', p); },
+      listLlmCredentials: function() { return invokeCapability('system.listLlmCredentials', 'llmCredentials:list'); },
+      saveLlmCredential: function(p) { return invokeCapability('system.saveLlmCredential', 'llmCredentials:save', p); },
+      deleteLlmCredential: function(p) { return invokeCapability('system.deleteLlmCredential', 'llmCredentials:delete', p); },
       resetMessages: function() { return invoke('app:resetLocalMessages'); },
       onCredentialRequest: function(cb) {
         return subscribe('credential:request', function(data) { cb(null, data); });
@@ -440,7 +580,7 @@ export function generateShimScript(
       listPackageReleases: function(pid) { return invoke('store:listReleases', { packageId: pid }); },
       getPackageRelease: function(p) { return invoke('store:getRelease', p); },
       listInstalledMods: function() { return invoke('store:listInstalledMods'); },
-      installRelease: function(p) { return invoke('store:installRelease', p); },
+      installRelease: function(p) { return invokeCapability('store.installRelease', 'store:installFromBlueprint', p); },
       uninstallPackage: function(pid) { return invoke('store:uninstallMod', { packageId: pid }); },
     },
 
@@ -471,6 +611,8 @@ export function generateShimScript(
       getStatus: function() { return invoke('socialSessions:getStatus'); },
     },
   };
+
+  installRemoteCapabilities(window.electronAPI);
 
   connectWs();
 
