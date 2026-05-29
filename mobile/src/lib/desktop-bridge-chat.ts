@@ -10,8 +10,9 @@ import { parseChatArtifacts } from "./mobile-artifacts";
 
 const DESKTOP_WAKE_ATTEMPTS = 8;
 const DESKTOP_WAKE_RETRY_MS = 1_000;
-const BRIDGE_INVOKE_TIMEOUT_MS = 30_000;
-const BRIDGE_RUN_TIMEOUT_MS = 120_000;
+const BRIDGE_INVOKE_TIMEOUT_MS = 10_000;
+const BRIDGE_SYNC_TIMEOUT_MS = 5_000;
+const BRIDGE_RUN_TIMEOUT_MS = 45_000;
 const DEFAULT_HISTORY_LIMIT = 100;
 const TIME_TAG_PATTERN =
   "(?:1[0-2]|0?[1-9]):[0-5]\\d\\s?(?:AM|PM)(?:,\\s+[A-Za-z]{3}\\s+\\d{1,2})?";
@@ -47,6 +48,13 @@ type DesktopBridgeChatArgs = {
 type DesktopBridgeChatResult = {
   text: string;
   artifacts: ChatArtifact[];
+};
+
+export type DesktopBridgeChatSyncResult = {
+  conversationId: string;
+  conversationChanged: boolean;
+  cursor: string | null;
+  messages: ChatMessage[];
 };
 
 type PendingResponse = {
@@ -141,29 +149,45 @@ export async function invokeDesktopBridge<T>(
   bridge: DesktopBridgeConnection,
   channel: string,
   args: unknown[] = [],
+  timeoutMs = BRIDGE_INVOKE_TIMEOUT_MS,
 ): Promise<T> {
-  const response = await fetch(
-    `${bridge.baseUrl}/bridge/ipc/${encodeURIComponent(channel)}`,
-    {
-      method: "POST",
-      headers: {
-        ...bridge.headers,
-        "Content-Type": "application/json",
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(
+      `${bridge.baseUrl}/bridge/ipc/${encodeURIComponent(channel)}`,
+      {
+        method: "POST",
+        headers: {
+          ...bridge.headers,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ args }),
+        signal: controller.signal,
       },
-      body: JSON.stringify({ args }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(await readBridgeError(response));
+    );
+    if (!response.ok) {
+      throw new Error(await readBridgeError(response));
+    }
+    const parsed = (await response.json()) as { result?: T };
+    return parsed.result as T;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Desktop bridge request timed out.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  const parsed = (await response.json()) as { result?: T };
-  return parsed.result as T;
 }
 
 async function getDesktopBridgeConversationId(
   bridge: DesktopBridgeConnection,
+  timeoutMs = BRIDGE_INVOKE_TIMEOUT_MS,
 ): Promise<string> {
-  const uiState = asRecord(await invokeDesktopBridge(bridge, "ui:getState"));
+  const uiState = asRecord(
+    await invokeDesktopBridge(bridge, "ui:getState", [], timeoutMs),
+  );
   const activeConversationId = asString(uiState?.conversationId).trim();
   if (activeConversationId) {
     return activeConversationId;
@@ -173,6 +197,8 @@ async function getDesktopBridgeConversationId(
     await invokeDesktopBridge(
       bridge,
       "localChat:getOrCreateDefaultConversationId",
+      [],
+      timeoutMs,
     ),
   ).trim();
   if (!fallbackConversationId) {
@@ -191,6 +217,13 @@ async function listDesktopBridgeMessages(
     "localChat:listSyncMessages",
     [{ conversationId, maxMessages }],
   );
+  return parseDesktopBridgeMessageRows(rows, conversationId);
+}
+
+function parseDesktopBridgeMessageRows(
+  rows: unknown[],
+  conversationId: string,
+): ChatMessage[] {
   return rows
     .filter((row): row is Record<string, unknown> => Boolean(asRecord(row)))
     .map((row) => {
@@ -223,6 +256,51 @@ export async function loadDesktopBridgeChatMessages(
   const bridge = await resolveDesktopBridge(access);
   const conversationId = await getDesktopBridgeConversationId(bridge);
   return await listDesktopBridgeMessages(bridge, conversationId, maxMessages);
+}
+
+export async function syncDesktopBridgeChatMessages({
+  access,
+  expectedConversationId,
+  sinceCursor,
+  maxMessages = DEFAULT_HISTORY_LIMIT,
+}: {
+  access: StoredPhoneAccess;
+  expectedConversationId?: string | null;
+  sinceCursor?: string | null;
+  maxMessages?: number;
+}): Promise<DesktopBridgeChatSyncResult> {
+  const bridge = await resolveDesktopBridge(access);
+  const conversationId = await getDesktopBridgeConversationId(
+    bridge,
+    BRIDGE_SYNC_TIMEOUT_MS,
+  );
+  const expected = expectedConversationId?.trim() || null;
+  const conversationChanged = Boolean(
+    expected && expected !== conversationId,
+  );
+  const effectiveCursor = conversationChanged ? null : sinceCursor;
+  const result = asRecord(
+    await invokeDesktopBridge(
+      bridge,
+      "localChat:syncMessages",
+      [
+        {
+          conversationId,
+          sinceCursor: effectiveCursor ?? null,
+          maxMessages,
+        },
+      ],
+      BRIDGE_SYNC_TIMEOUT_MS,
+    ),
+  );
+  const rows = Array.isArray(result?.messages) ? result.messages : [];
+  const cursor = asString(result?.cursor).trim() || effectiveCursor || null;
+  return {
+    conversationId,
+    conversationChanged,
+    cursor,
+    messages: parseDesktopBridgeMessageRows(rows, conversationId),
+  };
 }
 
 type HeaderWebSocketConstructor = new (
@@ -473,15 +551,8 @@ export async function sendDesktopBridgeChat({
   try {
     const result = await new Promise<DesktopBridgeChatResult>(
       async (resolve, reject) => {
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          reject(
-            new Error("Stella did not reply in time. Try again in a moment."),
-          );
-        }, BRIDGE_RUN_TIMEOUT_MS);
-
         let onAbort = () => {};
+        let timer: ReturnType<typeof setTimeout>;
         const cleanup = () => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
@@ -494,6 +565,14 @@ export async function sendDesktopBridgeChat({
           cleanup();
           reject(reason);
         };
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cancelRun();
+          rejectOnce(
+            new Error("Stella did not reply in time. Try again in a moment."),
+          );
+        }, BRIDGE_RUN_TIMEOUT_MS);
         onAbort = () => {
           if (settled) return;
           settled = true;

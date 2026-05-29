@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   LayoutAnimation,
   Pressable,
   StyleSheet,
@@ -9,7 +8,9 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import {
+  loadComputerChatSyncState,
   loadComputerChatMessages,
+  saveComputerChatSyncState,
   saveComputerChatMessages,
 } from "../../src/lib/offline-chat-storage";
 import { isGuest } from "../../src/lib/guest-mode";
@@ -19,9 +20,9 @@ import {
   type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
 import {
-  loadDesktopBridgeChatMessages,
   normalizeDesktopChatMessageText,
   sendDesktopBridgeChat,
+  syncDesktopBridgeChatMessages,
 } from "../../src/lib/desktop-bridge-chat";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
@@ -35,9 +36,28 @@ import { ArtifactListSheet } from "../../src/components/ArtifactListSheet";
 import { ComputerSettingsSheet } from "../../src/components/ComputerSettingsSheet";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
 import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
+import { useTopBarStatus } from "../../src/lib/top-bar-status";
 
 const createId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const mergeMessagesById = (
+  current: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] => {
+  if (incoming.length === 0) return current;
+  const byId = new Map(current.map((message) => [message.id, message]));
+  const order = current.map((message) => message.id);
+  for (const message of incoming) {
+    if (!byId.has(message.id)) {
+      order.push(message.id);
+    }
+    byId.set(message.id, message);
+  }
+  return order
+    .map((id) => byId.get(id))
+    .filter((message): message is ChatMessage => Boolean(message));
+};
 
 export default function ComputerChatScreen() {
   const guest = isGuest();
@@ -130,6 +150,9 @@ type QueuedSend = {
 /** Cap on how many desktop messages we render after a sync. */
 const HISTORY_MESSAGE_LIMIT = 100;
 
+/** Cap on how many recent artifacts the Artifacts list sheet shows. */
+const MAX_LISTED_ARTIFACTS = 20;
+
 function AuthenticatedComputerChat() {
   const colors = useColors();
   const router = useRouter();
@@ -147,11 +170,10 @@ function AuthenticatedComputerChat() {
     null,
   );
   const [artifactsOpen, setArtifactsOpen] = useState(false);
-  // One-shot desktop history sync state. `syncing` controls the spinner;
-  // `didMountSync` is a guard so the sync runs exactly once per tab landing
-  // once the bridge preconditions are ready.
-  const [syncing, setSyncing] = useState(false);
+  // One-shot desktop history sync guard so the sync runs exactly once per tab
+  // landing once the bridge preconditions are ready.
   const didMountSyncRef = useRef(false);
+  const { setSyncing: setTopBarSyncing } = useTopBarStatus();
   const modelSettings = useComputerModelSettings();
   // Local follow-up queue (mirrors the chat screen). The Convex `sendChat`
   // path is bypassed here: messages and history go straight to the paired
@@ -163,9 +185,40 @@ function AuthenticatedComputerChat() {
     replyId: string;
     abort: AbortController;
   } | null>(null);
+  const syncCursorRef = useRef<string | null>(null);
+  const syncConversationIdRef = useRef<string | null>(null);
+  const syncActivityCountRef = useRef(0);
   // Forward declaration so `dispatch` can call the latest `drainQueue`
   // without depending on its identity (which would create a callback cycle).
   const drainQueueRef = useRef<(() => void) | null>(null);
+
+  const persistSyncState = useCallback(
+    (state: { conversationId?: string | null; cursor?: string | null }) => {
+      const conversationId = state.conversationId?.trim() || null;
+      const cursor = state.cursor?.trim() || null;
+      syncConversationIdRef.current = conversationId;
+      syncCursorRef.current = cursor;
+      void saveComputerChatSyncState({ conversationId, cursor });
+    },
+    [],
+  );
+
+  const beginSyncIndicator = useCallback(() => {
+    let ended = false;
+    syncActivityCountRef.current += 1;
+    setTopBarSyncing(true);
+    return () => {
+      if (ended) return;
+      ended = true;
+      syncActivityCountRef.current = Math.max(
+        0,
+        syncActivityCountRef.current - 1,
+      );
+      if (syncActivityCountRef.current === 0) {
+        setTopBarSyncing(false);
+      }
+    };
+  }, [setTopBarSyncing]);
 
   useEffect(() => {
     void getPreferredPhoneAccess().then((access) => {
@@ -175,18 +228,37 @@ function AuthenticatedComputerChat() {
   }, []);
 
   useEffect(() => {
-    void loadComputerChatMessages().then((loaded) => {
-      setMessages(
-        loaded
-          .map((message) => ({
-            ...message,
-            text: normalizeDesktopChatMessageText(message.text),
-          }))
-          .filter(
-            (message) =>
-              message.text.length > 0 || (message.artifacts?.length ?? 0) > 0,
-          ),
-      );
+    void Promise.all([
+      loadComputerChatMessages(),
+      loadComputerChatSyncState(),
+    ]).then(([loaded, syncState]) => {
+      const normalizedMessages = loaded
+        .map((message) => ({
+          ...message,
+          text: normalizeDesktopChatMessageText(message.text),
+        }))
+        .filter(
+          (message) =>
+            message.text.length > 0 || (message.artifacts?.length ?? 0) > 0,
+        );
+      const effectiveConversationId =
+        normalizedMessages.length > 0 ? syncState.conversationId : null;
+      const effectiveCursor =
+        normalizedMessages.length > 0 && effectiveConversationId
+          ? syncState.cursor
+          : null;
+      syncConversationIdRef.current = effectiveConversationId;
+      syncCursorRef.current = effectiveCursor;
+      if (
+        effectiveConversationId !== syncState.conversationId ||
+        effectiveCursor !== syncState.cursor
+      ) {
+        void saveComputerChatSyncState({
+          conversationId: effectiveConversationId,
+          cursor: effectiveCursor,
+        });
+      }
+      setMessages(normalizedMessages);
       setStorageLoaded(true);
     });
   }, []);
@@ -209,26 +281,48 @@ function AuthenticatedComputerChat() {
 
     didMountSyncRef.current = true;
     let cancelled = false;
-    setSyncing(true);
+    const endSyncIndicator = beginSyncIndicator();
     void (async () => {
       try {
-        const next = await loadDesktopBridgeChatMessages(
-          phoneAccess,
-          HISTORY_MESSAGE_LIMIT,
-        );
+        const expectedConversationId = syncConversationIdRef.current;
+        const sinceCursor = syncCursorRef.current;
+        const next = await syncDesktopBridgeChatMessages({
+          access: phoneAccess,
+          expectedConversationId,
+          sinceCursor: expectedConversationId ? sinceCursor : null,
+          maxMessages: HISTORY_MESSAGE_LIMIT,
+        });
         if (cancelled) return;
-        setMessages(next);
-        setSyncing(false);
+        persistSyncState({
+          conversationId: next.conversationId,
+          cursor: next.cursor,
+        });
+        setMessages((current) =>
+          sinceCursor && !next.conversationChanged
+            ? mergeMessagesById(current, next.messages)
+            : next.messages,
+        );
       } catch {
         if (cancelled) return;
-        setSyncing(false);
+      } finally {
+        if (!cancelled) {
+          endSyncIndicator();
+        }
       }
     })();
 
     return () => {
       cancelled = true;
+      endSyncIndicator();
     };
-  }, [paired, phoneAccess, sending, storageLoaded]);
+  }, [
+    beginSyncIndicator,
+    paired,
+    persistSyncState,
+    phoneAccess,
+    sending,
+    storageLoaded,
+  ]);
 
   const dispatch = useCallback(
     async (item: QueuedSend) => {
@@ -298,6 +392,45 @@ function AuthenticatedComputerChat() {
               : msg,
           ),
         );
+        const endSyncIndicator = beginSyncIndicator();
+        void syncDesktopBridgeChatMessages({
+          access: phoneAccess,
+          expectedConversationId: syncConversationIdRef.current,
+          sinceCursor: syncConversationIdRef.current
+            ? syncCursorRef.current
+            : null,
+          maxMessages: HISTORY_MESSAGE_LIMIT,
+        })
+          .then((delta) => {
+            if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
+            persistSyncState({
+              conversationId: delta.conversationId,
+              cursor: delta.cursor,
+            });
+            if (delta.conversationChanged) {
+              if (delta.messages.length > 0) {
+                setMessages(delta.messages);
+              }
+              return;
+            }
+            const hasCanonicalAssistant = delta.messages.some(
+              (message) => message.role === "assistant",
+            );
+            if (!hasCanonicalAssistant) return;
+            setMessages((m) =>
+              mergeMessagesById(
+                m.filter(
+                  (msg) => msg.id !== item.userMessageId && msg.id !== replyId,
+                ),
+                delta.messages,
+              ),
+            );
+          })
+          .catch(() => {
+            // The optimistic local turn is already rendered; the next tab sync
+            // will reconcile with canonical desktop message ids.
+          })
+          .finally(endSyncIndicator);
         notifySuccess();
         setSending(false);
         drainQueueRef.current?.();
@@ -317,7 +450,7 @@ function AuthenticatedComputerChat() {
         drainQueueRef.current?.();
       }
     },
-    [phoneAccess],
+    [beginSyncIndicator, persistSyncState, phoneAccess],
   );
 
   const drainQueue = useCallback(() => {
@@ -438,20 +571,6 @@ function AuthenticatedComputerChat() {
         syncSurface: {
           flex: 1,
         },
-        // Spinner overlay shown while we wait for the desktop's current
-        // chat snapshot. Floats centered above the chat so the existing
-        // transcript (if any) stays visible behind it — replaces, doesn't
-        // hide.
-        syncOverlay: {
-          alignItems: "center",
-          bottom: 0,
-          justifyContent: "center",
-          left: 0,
-          pointerEvents: "none",
-          position: "absolute",
-          right: 0,
-          top: 0,
-        },
       }),
     [colors],
   );
@@ -511,8 +630,9 @@ function AuthenticatedComputerChat() {
   const canSubmit =
     draft.trim().length > 0 && paired === true && Boolean(phoneAccess);
 
-  // All artifacts in the conversation, newest first and de-duplicated, for the
-  // Artifacts list sheet.
+  // The most recent artifacts in the conversation, newest first and
+  // de-duplicated, for the Artifacts list sheet. Capped so a long history
+  // doesn't grow the list unbounded.
   const conversationArtifacts = useMemo(() => {
     const seen = new Set<string>();
     const out: ChatArtifact[] = [];
@@ -521,6 +641,7 @@ function AuthenticatedComputerChat() {
         if (seen.has(artifact.id)) continue;
         seen.add(artifact.id);
         out.push(artifact);
+        if (out.length >= MAX_LISTED_ARTIFACTS) return out;
       }
     }
     return out;
@@ -549,11 +670,6 @@ function AuthenticatedComputerChat() {
         onOpenArtifact={setSelectedArtifact}
         onOpenArtifacts={() => setArtifactsOpen(true)}
       />
-      {syncing ? (
-        <View style={styles.syncOverlay}>
-          <ActivityIndicator size="small" color={colors.textMuted} />
-        </View>
-      ) : null}
       <ComputerSettingsSheet
         visible={modelSheetOpen}
         onClose={() => setModelSheetOpen(false)}

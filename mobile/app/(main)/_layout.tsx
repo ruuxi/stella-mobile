@@ -21,6 +21,7 @@ import {
 } from "../../src/components/AppBackdrop";
 import { StellaBrandMark } from "../../src/components/StellaBrandMark";
 import {
+  ActivityIndicator,
   Keyboard,
   Pressable,
   StyleSheet,
@@ -49,6 +50,7 @@ import {
   hasSeenComputerHint,
   markComputerHintSeen,
 } from "../../src/lib/computer-hint";
+import { TopBarStatusProvider } from "../../src/lib/top-bar-status";
 
 type TabId = MainTabId;
 
@@ -137,12 +139,17 @@ export default function MainLayout() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [consentVisible, setConsentVisible] = useState(false);
+  const [topBarSyncing, setTopBarSyncing] = useState(false);
   // First-time hint dot on the Computer icon, dismissed once the user opens
   // the Computer tab.
   const [showComputerHint, setShowComputerHint] = useState(false);
   const colors = useColors();
   const { isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const topBarStatus = useMemo(
+    () => ({ setSyncing: setTopBarSyncing }),
+    [],
+  );
 
   useEffect(() => {
     if (!hasAiConsent()) {
@@ -311,7 +318,9 @@ export default function MainLayout() {
             <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
             <View style={styles.content}>
               <View style={styles.contentSlot}>
-                <Slot />
+                <TopBarStatusProvider value={topBarStatus}>
+                  <Slot />
+                </TopBarStatusProvider>
               </View>
             </View>
           </View>
@@ -368,7 +377,15 @@ export default function MainLayout() {
                   </Pressable>
                 </View>
                 <View style={styles.topBarCenter} pointerEvents="none">
-                  <StellaBrandMark compact />
+                  {topBarSyncing ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.textMuted}
+                      accessibilityLabel="Syncing computer chat"
+                    />
+                  ) : (
+                    <StellaBrandMark compact />
+                  )}
                 </View>
                 <View style={styles.topBarSide}>
                   <Pressable
@@ -395,7 +412,9 @@ export default function MainLayout() {
               </View>
 
               <View style={styles.content}>
-                <Slot />
+                <TopBarStatusProvider value={topBarStatus}>
+                  <Slot />
+                </TopBarStatusProvider>
               </View>
 
               {/* Scrim — sits on top of the foreground while the drawer is
