@@ -25,11 +25,12 @@ import {
 } from "../../src/lib/desktop-bridge-chat";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
-import { useStellaModelSelection } from "../../src/lib/model-selection";
+import { useComputerModelSettings } from "../../src/lib/use-computer-model-settings";
 import { useColors } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import type { ChatMessage } from "../../src/types";
 import { ChatPane } from "../../src/components/ChatPane";
+import { ComputerSettingsSheet } from "../../src/components/ComputerSettingsSheet";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
 import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
 
@@ -139,12 +140,13 @@ function AuthenticatedComputerChat() {
     null,
   );
   const [pairSheetOpen, setPairSheetOpen] = useState(false);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
   // One-shot desktop history sync state. `syncing` controls the spinner;
   // `didMountSync` is a guard so the sync runs exactly once per tab landing
   // once the bridge preconditions are ready.
   const [syncing, setSyncing] = useState(false);
   const didMountSyncRef = useRef(false);
-  const modelSelection = useStellaModelSelection();
+  const modelSettings = useComputerModelSettings();
   // Local follow-up queue (mirrors the chat screen). The Convex `sendChat`
   // path is bypassed here: messages and history go straight to the paired
   // desktop bridge, while Convex remains pairing/tunnel discovery only.
@@ -258,7 +260,6 @@ function AuthenticatedComputerChat() {
         const result = await sendDesktopBridgeChat({
           access: phoneAccess,
           message: item.text,
-          model: modelSelection.selectedModel,
           signal: abort.signal,
         });
         if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
@@ -291,7 +292,7 @@ function AuthenticatedComputerChat() {
         drainQueueRef.current?.();
       }
     },
-    [modelSelection.selectedModel, phoneAccess],
+    [phoneAccess],
   );
 
   const drainQueue = useCallback(() => {
@@ -501,10 +502,8 @@ function AuthenticatedComputerChat() {
         composerEnabled
         enableAttachments={false}
         onViewComputer={() => router.push("/stella")}
-        selectedModel={modelSelection.selectedModel}
-        selectedModelLabel={modelSelection.selectedModelLabel}
-        modelOptions={modelSelection.models}
-        onSelectModel={(modelId) => void modelSelection.selectModel(modelId)}
+        selectedModelLabel={modelSettings.selectedModelLabel}
+        onOpenModelSettings={() => setModelSheetOpen(true)}
         dictationAnonymous={false}
         dictationHeaders={dictationHeaders}
       />
@@ -513,6 +512,13 @@ function AuthenticatedComputerChat() {
           <ActivityIndicator size="small" color={colors.textMuted} />
         </View>
       ) : null}
+      <ComputerSettingsSheet
+        visible={modelSheetOpen}
+        onClose={() => setModelSheetOpen(false)}
+        access={phoneAccess}
+        catalog={modelSettings.catalog}
+        onApplied={modelSettings.syncFromSnapshot}
+      />
     </View>
   );
 }

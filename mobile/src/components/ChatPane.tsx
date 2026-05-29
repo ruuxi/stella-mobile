@@ -773,12 +773,6 @@ type PlusMenuLevel = {
 
 type AnchorRect = { x: number; y: number; width: number; height: number };
 
-export type ChatPaneModelOption = {
-  id: string;
-  name: string;
-  allowedForAudience: boolean;
-};
-
 const PLUS_MENU_GAP = 10;
 const PLUS_MENU_MIN_WIDTH = 200;
 const PLUS_MENU_EDGE_PADDING = 12;
@@ -1129,10 +1123,13 @@ export type ChatPaneProps = {
    */
   onViewComputer?: () => void;
 
-  selectedModel?: string;
+  /** Current model label shown on the floating "Model" row. */
   selectedModelLabel?: string;
-  modelOptions?: ChatPaneModelOption[];
-  onSelectModel?: (modelId: string) => void;
+  /**
+   * Opens the model tray (engine / model / thinking). When provided, the
+   * floating menu shows a "Model" row that opens the tray on tap.
+   */
+  onOpenModelSettings?: () => void;
 
   /** Headers passed to the dictation upload (e.g. mobile device id for guests). */
   dictationAnonymous: boolean;
@@ -1155,10 +1152,8 @@ export function ChatPane({
   attachments,
   onChangeAttachments,
   onViewComputer,
-  selectedModel,
   selectedModelLabel,
-  modelOptions,
-  onSelectModel,
+  onOpenModelSettings,
   dictationAnonymous,
   dictationHeaders,
 }: ChatPaneProps) {
@@ -1400,33 +1395,17 @@ export function ChatPane({
         onSelect: onViewComputer,
       });
     }
-    if (onSelectModel && selectedModelLabel && (modelOptions?.length ?? 0) > 0) {
+    if (onOpenModelSettings) {
       out.push({
         id: "model-picker",
-        label: selectedModelLabel,
+        label: "Model",
         icon: "cpu",
-        submenuTitle: "Model",
-        submenu: (modelOptions ?? []).map((model) => ({
-          id: `model-${model.id}`,
-          label: model.name,
-          icon: "cpu",
-          selected: selectedModel === model.id,
-          disabled: !model.allowedForAudience,
-          onSelect: () => {
-            if (model.allowedForAudience) onSelectModel(model.id);
-          },
-        })),
-        onSelect: () => {},
+        trailingLabel: selectedModelLabel,
+        onSelect: onOpenModelSettings,
       });
     }
     return out;
-  }, [
-    modelOptions,
-    onSelectModel,
-    onViewComputer,
-    selectedModel,
-    selectedModelLabel,
-  ]);
+  }, [onOpenModelSettings, onViewComputer, selectedModelLabel]);
 
   const floatingAnchorRef = useRef<View>(null);
   const [floatingMenuAnchor, setFloatingMenuAnchor] =

@@ -30,7 +30,7 @@ const TRAILING_TIME_TAG_RE = new RegExp(
   "i",
 );
 
-type DesktopBridgeConnection = {
+export type DesktopBridgeConnection = {
   baseUrl: string;
   headers: Record<string, string>;
 };
@@ -100,7 +100,7 @@ const toWebSocketUrl = (baseUrl: string) => {
   return url.toString();
 };
 
-async function resolveDesktopBridge(
+export async function resolveDesktopBridge(
   access: StoredPhoneAccess,
 ): Promise<DesktopBridgeConnection> {
   await requestDesktopConnection(access);
@@ -134,7 +134,7 @@ async function resolveDesktopBridge(
   };
 }
 
-async function invokeDesktopBridge<T>(
+export async function invokeDesktopBridge<T>(
   bridge: DesktopBridgeConnection,
   channel: string,
   args: unknown[] = [],
