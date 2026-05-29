@@ -36,7 +36,10 @@ import { ArtifactListSheet } from "../../src/components/ArtifactListSheet";
 import { ComputerSettingsSheet } from "../../src/components/ComputerSettingsSheet";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
 import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
-import { useTopBarStatus } from "../../src/lib/top-bar-status";
+import {
+  useTopBarStatus,
+  type DesktopConnection,
+} from "../../src/lib/top-bar-status";
 
 const createId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -170,10 +173,15 @@ function AuthenticatedComputerChat() {
     null,
   );
   const [artifactsOpen, setArtifactsOpen] = useState(false);
+  // Desktop connection state surfaced in the top-bar center. `inFlight` is true
+  // while any sync/connection attempt runs (→ spinner); `lastOk` records the
+  // last attempt's outcome (→ green/red dot once idle).
+  const [inFlight, setInFlight] = useState(false);
+  const [lastOk, setLastOk] = useState<boolean | null>(null);
   // One-shot desktop history sync guard so the sync runs exactly once per tab
   // landing once the bridge preconditions are ready.
   const didMountSyncRef = useRef(false);
-  const { setSyncing: setTopBarSyncing } = useTopBarStatus();
+  const { setConnection: setTopBarConnection } = useTopBarStatus();
   const modelSettings = useComputerModelSettings();
   // Local follow-up queue (mirrors the chat screen). The Convex `sendChat`
   // path is bypassed here: messages and history go straight to the paired
@@ -206,7 +214,7 @@ function AuthenticatedComputerChat() {
   const beginSyncIndicator = useCallback(() => {
     let ended = false;
     syncActivityCountRef.current += 1;
-    setTopBarSyncing(true);
+    setInFlight(true);
     return () => {
       if (ended) return;
       ended = true;
@@ -215,10 +223,31 @@ function AuthenticatedComputerChat() {
         syncActivityCountRef.current - 1,
       );
       if (syncActivityCountRef.current === 0) {
-        setTopBarSyncing(false);
+        setInFlight(false);
       }
     };
-  }, [setTopBarSyncing]);
+  }, []);
+
+  // Derive the top-bar connection status from pairing + sync activity and push
+  // it up to the shared top bar. Resets to null when leaving the tab so the
+  // indicator only shows on the computer chat.
+  const connection: DesktopConnection =
+    paired === false
+      ? "disconnected"
+      : inFlight || paired === null || lastOk === null
+        ? "connecting"
+        : lastOk
+          ? "connected"
+          : "disconnected";
+
+  useEffect(() => {
+    setTopBarConnection(connection);
+  }, [connection, setTopBarConnection]);
+
+  useEffect(
+    () => () => setTopBarConnection(null),
+    [setTopBarConnection],
+  );
 
   useEffect(() => {
     void getPreferredPhoneAccess().then((access) => {
@@ -263,9 +292,14 @@ function AuthenticatedComputerChat() {
     });
   }, []);
 
+  // Debounce persistence so streaming (which mutates `messages` many times a
+  // second) doesn't rewrite the whole history to disk on every chunk.
   useEffect(() => {
     if (!storageLoaded) return;
-    void saveComputerChatMessages(messages);
+    const handle = setTimeout(() => {
+      void saveComputerChatMessages(messages);
+    }, 500);
+    return () => clearTimeout(handle);
   }, [messages, storageLoaded]);
 
   // ─── Desktop chat snapshot sync ────────────────────────────────────────
@@ -302,8 +336,10 @@ function AuthenticatedComputerChat() {
             ? mergeMessagesById(current, next.messages)
             : next.messages,
         );
+        setLastOk(true);
       } catch {
         if (cancelled) return;
+        setLastOk(false);
       } finally {
         if (!cancelled) {
           endSyncIndicator();
@@ -379,6 +415,7 @@ function AuthenticatedComputerChat() {
           return;
         }
         activeDispatchRef.current = null;
+        setLastOk(true);
         setMessages((m) =>
           m.map((msg) =>
             msg.id === replyId
@@ -440,6 +477,7 @@ function AuthenticatedComputerChat() {
           setSending(false);
           return;
         }
+        setLastOk(false);
         const message = userFacingError(e);
         setMessages((m) =>
           m.map((msg) =>

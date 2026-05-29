@@ -87,7 +87,7 @@ const makeStyles = (colors: Colors, topInset: number) =>
       flex: 1,
     },
     header: {
-      backgroundColor: colors.surface,
+      backgroundColor: colors.background,
       borderBottomColor: colors.border,
       borderBottomWidth: StyleSheet.hairlineWidth,
       paddingBottom: 12,

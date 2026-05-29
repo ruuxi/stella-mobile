@@ -28,6 +28,7 @@ import {
   deferredStellaFontAssets,
 } from "../src/theme/fonts";
 import { ThemeProvider } from "../src/theme/theme-context";
+import { ChatSearchProvider } from "../src/lib/chat-search";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -173,7 +174,9 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider onLayout={onLayoutRootView}>
         <ThemeProvider>
-          <AppLayout />
+          <ChatSearchProvider>
+            <AppLayout />
+          </ChatSearchProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

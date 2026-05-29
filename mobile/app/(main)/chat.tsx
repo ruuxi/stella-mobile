@@ -65,9 +65,14 @@ export default function ChatScreen() {
     });
   }, []);
 
+  // Debounce persistence so streaming (which mutates `messages` many times a
+  // second) doesn't rewrite the whole history to disk on every chunk.
   useEffect(() => {
     if (!storageLoaded) return;
-    void saveOfflineChatMessages(messages);
+    const handle = setTimeout(() => {
+      void saveOfflineChatMessages(messages);
+    }, 500);
+    return () => clearTimeout(handle);
   }, [messages, storageLoaded]);
 
   useEffect(() => {

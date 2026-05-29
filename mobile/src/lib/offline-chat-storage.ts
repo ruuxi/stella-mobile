@@ -6,7 +6,7 @@ const OFFLINE_STORAGE_KEY = "stella-mobile-offline-chat-v1";
 const COMPUTER_STORAGE_KEY = "stella-mobile-computer-chat-v1";
 const COMPUTER_SYNC_CURSOR_KEY = "stella-mobile-computer-chat-sync-cursor-v1";
 const COMPUTER_SYNC_STATE_KEY = "stella-mobile-computer-chat-sync-state-v1";
-const MAX_MESSAGES = 200;
+const MAX_MESSAGES = 1000;
 
 export type ComputerChatSyncState = {
   conversationId: string | null;

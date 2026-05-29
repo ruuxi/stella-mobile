@@ -20,6 +20,7 @@ import {
   NativeSyntheticEvent,
   Platform,
   Pressable,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -47,6 +48,7 @@ import { ArtifactCard } from "./ArtifactCard";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
+import { useChatSearch } from "../lib/chat-search";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
 import { speakReply, useReadAloudPreference } from "../lib/read-aloud";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
@@ -754,7 +756,7 @@ function ScrollToBottomFab({
       <GlassView style={styles.scrollToBottomFabGlass}>
         <Icon
           name="chevron-down"
-          size={19}
+          size={16}
           color={colors.accent}
           weight="semibold"
         />
@@ -1094,6 +1096,122 @@ const makePlusMenuStyles = (colors: Colors) =>
       letterSpacing: -0.15,
     },
   });
+
+// Case- and accent-insensitive fold for matching: decompose, drop combining
+// diacritics (the U+0300–U+036F block covers Latin accents), and lowercase. So
+// "Café" and "cafe" match. Uses the combining-marks range rather than the
+// `\p{Diacritic}` property escape for broad RN engine compatibility.
+const foldText = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+// Split a raw query into folded terms for multi-word (AND) matching.
+const foldQueryTerms = (query: string): string[] =>
+  foldText(query)
+    .split(/\s+/)
+    .filter(Boolean);
+
+// Fold a string while tracking, for each folded character, the original index
+// it came from. Lets the snippet highlight map a match found in folded space
+// back onto the original (accented/cased) text. `map[k]` is the original UTF-16
+// index of folded char `k`; the trailing entry maps to the string end.
+function foldWithMap(text: string): { folded: string; map: number[] } {
+  const folded: string[] = [];
+  const map: number[] = [];
+  let originalIndex = 0;
+  for (const char of text) {
+    const dec = char
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    for (const f of dec) {
+      folded.push(f);
+      map.push(originalIndex);
+    }
+    originalIndex += char.length;
+  }
+  map.push(text.length);
+  return { folded: folded.join(""), map };
+}
+
+// A short preview of a matched message, windowed around the earliest matching
+// term so the hit is visible (and can be emphasised) in the row — accent- and
+// case-insensitively, mapping the folded match back onto the original text.
+function buildSearchSnippet(
+  text: string,
+  query: string,
+): { before: string; match: string; after: string } {
+  const terms = foldQueryTerms(query);
+  const { folded, map } = foldWithMap(text);
+  let foldIdx = -1;
+  let termLen = 0;
+  for (const term of terms) {
+    const at = folded.indexOf(term);
+    if (at >= 0 && (foldIdx < 0 || at < foldIdx)) {
+      foldIdx = at;
+      termLen = term.length;
+    }
+  }
+  if (foldIdx < 0) {
+    return {
+      before: text.slice(0, 120),
+      match: "",
+      after: text.length > 120 ? "…" : "",
+    };
+  }
+  const matchStart = map[foldIdx] ?? 0;
+  const matchEnd = map[foldIdx + termLen] ?? text.length;
+  const start = Math.max(0, matchStart - 28);
+  const before = (start > 0 ? "…" : "") + text.slice(start, matchStart);
+  const match = text.slice(matchStart, matchEnd);
+  const tailEnd = matchEnd + 90;
+  const after =
+    text.slice(matchEnd, tailEnd) + (tailEnd < text.length ? "…" : "");
+  return { before, match, after };
+}
+
+const SearchResultRow = memo(function SearchResultRow({
+  message,
+  query,
+  styles,
+  colors,
+  onPress,
+}: {
+  message: ChatMessage;
+  query: string;
+  styles: ChatStyles;
+  colors: Colors;
+  onPress: () => void;
+}) {
+  const snippet = useMemo(
+    () => buildSearchSnippet(message.text, query),
+    [message.text, query],
+  );
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Jump to message: ${message.text.slice(0, 80)}`}
+      style={({ pressed }) => [
+        styles.searchResultRow,
+        pressed && styles.searchResultRowPressed,
+      ]}
+    >
+      <Text
+        style={styles.searchResultText}
+        numberOfLines={2}
+        maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+      >
+        {snippet.before}
+        <Text style={styles.searchResultMatch}>{snippet.match}</Text>
+        {snippet.after}
+      </Text>
+      <Icon name="chevron-right" size={16} color={colors.textMuted} />
+    </Pressable>
+  );
+});
 
 // ---------------------------------------------------------------------------
 // ChatPane — full chat screen surface (list + composer + scroll model).
@@ -1443,9 +1561,8 @@ export function ChatPane({
     if (onOpenModelSettings) {
       out.push({
         id: "model-picker",
-        label: "Model",
+        label: selectedModelLabel ?? "Model",
         icon: "cpu",
-        trailingLabel: selectedModelLabel,
         onSelect: onOpenModelSettings,
       });
     }
@@ -1565,6 +1682,53 @@ export function ChatPane({
     [styles],
   );
   const getItemType = useCallback((item: ChatMessage) => item.role, []);
+
+  // Search shows a separate results menu that overlays the chat (the chat
+  // itself is never filtered). Matches are listed newest-first; tapping one
+  // jumps to that message in the conversation.
+  const search = useChatSearch();
+  const searchOpen = search.isOpen;
+  const searchQuery = search.query.trim();
+  const searchActive = searchQuery.length > 0;
+  // Fold each message once (recomputed only when messages change) so each
+  // keystroke just filters precomputed strings instead of re-normalizing the
+  // whole history.
+  const foldedMessages = useMemo(
+    () =>
+      messages.map((message, index) => ({
+        message,
+        index,
+        folded: foldText(message.text),
+      })),
+    [messages],
+  );
+  const searchResults = useMemo(() => {
+    if (!searchActive) return [] as { message: ChatMessage; index: number }[];
+    const terms = foldQueryTerms(searchQuery);
+    if (terms.length === 0) {
+      return [] as { message: ChatMessage; index: number }[];
+    }
+    const out: { message: ChatMessage; index: number }[] = [];
+    // Newest first; a message matches when every term appears somewhere in it.
+    for (let i = foldedMessages.length - 1; i >= 0; i -= 1) {
+      const entry = foldedMessages[i];
+      if (terms.every((term) => entry.folded.includes(term))) {
+        out.push({ message: entry.message, index: entry.index });
+      }
+    }
+    return out;
+  }, [foldedMessages, searchActive, searchQuery]);
+
+  const jumpToMessage = useCallback(
+    (index: number) => {
+      search.close();
+      // Let the results overlay unmount before scrolling the list underneath.
+      setTimeout(() => {
+        scroll.listRef.current?.scrollToIndex({ index, animated: true });
+      }, 60);
+    },
+    [search, scroll.listRef],
+  );
 
   const empty = messages.length === 0;
   const hasText = draft.trim().length > 0;
@@ -1689,7 +1853,7 @@ export function ChatPane({
             />
           </>
         )}
-        {hasFloatingMenu ? (
+        {hasFloatingMenu && !searchOpen ? (
           <Animated.View
             ref={floatingAnchorRef}
             collapsable={false}
@@ -1731,12 +1895,48 @@ export function ChatPane({
             </Pressable>
           </Animated.View>
         ) : null}
+        {searchOpen && searchActive ? (
+          <View
+            style={[
+              styles.searchDropdown,
+              { maxHeight: Math.max(160, screenHeight * 0.5) },
+            ]}
+          >
+            {searchResults.length === 0 ? (
+              <Text style={styles.searchDropdownEmpty}>
+                No messages match “{searchQuery}”
+              </Text>
+            ) : (
+              <ScrollView
+                contentContainerStyle={styles.searchDropdownContent}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+                showsVerticalScrollIndicator={false}
+              >
+                {searchResults.map((result) => (
+                  <SearchResultRow
+                    key={result.message.id}
+                    message={result.message}
+                    query={searchQuery}
+                    styles={styles}
+                    colors={colors}
+                    onPress={() => jumpToMessage(result.index)}
+                  />
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        ) : null}
       </View>
 
       <View
-        style={[styles.footerOverlay, { paddingBottom: keyboardHeight }]}
+        style={[
+          styles.footerOverlay,
+          { paddingBottom: keyboardHeight },
+          searchOpen && styles.hiddenFooter,
+        ]}
         onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}
-        pointerEvents="box-none"
+        pointerEvents={searchOpen ? "none" : "box-none"}
       >
         <WorkingIndicator active={streaming} />
         <View
@@ -1985,26 +2185,26 @@ const makeStyles = (colors: Colors) =>
     },
     scrollToBottomFab: {
       bottom: 8,
-      height: 40,
+      height: 32,
       position: "absolute",
       left: "50%",
-      marginLeft: -20,
+      marginLeft: -16,
       shadowColor: "#000",
       shadowOffset: { width: 0, height: 2 },
       shadowOpacity: 0.06,
       shadowRadius: 5,
       elevation: 2,
-      width: 40,
+      width: 32,
     },
     scrollToBottomFabGlass: {
       alignItems: "center",
       borderColor: fadeHex(colors.border, 0.6),
-      borderRadius: 20,
+      borderRadius: 16,
       borderWidth: StyleSheet.hairlineWidth,
       flex: 1,
       justifyContent: "center",
       overflow: "hidden",
-      width: 40,
+      width: 32,
     },
     scrollToBottomFabPressed: { opacity: 0.88 },
     floatingMenuButton: {
@@ -2033,13 +2233,13 @@ const makeStyles = (colors: Colors) =>
     scrollToBottomDot: {
       backgroundColor: colors.accent,
       borderColor: colors.surface,
-      borderRadius: 5,
+      borderRadius: 4,
       borderWidth: 1.5,
-      height: 10,
+      height: 8,
       position: "absolute",
-      right: 6,
-      top: 6,
-      width: 10,
+      right: 4,
+      top: 4,
+      width: 8,
     },
     list: {
       paddingHorizontal: CHAT_HORIZONTAL_INSET,
@@ -2052,6 +2252,60 @@ const makeStyles = (colors: Colors) =>
       alignItems: "center",
       flex: 1,
       justifyContent: "center",
+    },
+    // Compact results popover that drops in just below the search field,
+    // floating over the chat (which stays visible). Matches the `+` menu
+    // surface so it reads as a menu, not a takeover.
+    searchDropdown: {
+      backgroundColor: colors.surface,
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      elevation: 4,
+      left: 8,
+      overflow: "hidden",
+      position: "absolute",
+      right: 8,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.08,
+      shadowRadius: 12,
+      top: 6,
+    },
+    searchDropdownContent: {
+      paddingVertical: 4,
+    },
+    searchDropdownEmpty: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.regular,
+      fontSize: 14,
+      paddingHorizontal: 16,
+      paddingVertical: 18,
+      textAlign: "center",
+    },
+    searchResultRow: {
+      alignItems: "center",
+      flexDirection: "row",
+      gap: 10,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+    },
+    searchResultRowPressed: {
+      backgroundColor: fadeHex(colors.text, 0.06),
+    },
+    searchResultText: {
+      color: colors.textMuted,
+      flex: 1,
+      fontFamily: fonts.sans.regular,
+      fontSize: 14,
+      lineHeight: 19,
+    },
+    searchResultMatch: {
+      color: colors.text,
+      fontFamily: fonts.sans.semiBold,
+    },
+    hiddenFooter: {
+      display: "none",
     },
 
     userRow: { flexDirection: "row", justifyContent: "flex-end" },

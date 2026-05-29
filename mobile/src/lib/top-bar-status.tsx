@@ -5,12 +5,16 @@ import {
   type SetStateAction,
 } from "react";
 
+/** Desktop bridge connection state surfaced in the top bar (computer chat). */
+export type DesktopConnection = "connected" | "connecting" | "disconnected";
+
 type TopBarStatusContextValue = {
-  setSyncing: Dispatch<SetStateAction<boolean>>;
+  /** Set the desktop connection status, or `null` to hide the indicator. */
+  setConnection: Dispatch<SetStateAction<DesktopConnection | null>>;
 };
 
 const TopBarStatusContext = createContext<TopBarStatusContextValue>({
-  setSyncing: () => {},
+  setConnection: () => {},
 });
 
 export const TopBarStatusProvider = TopBarStatusContext.Provider;

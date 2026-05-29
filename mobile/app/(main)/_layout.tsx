@@ -26,6 +26,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -40,6 +41,8 @@ import Animated, {
 import { type Colors } from "../../src/theme/colors";
 import { useColors, useTheme } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
+import { fadeHex } from "../../src/theme/oklch";
+import { useChatSearch } from "../../src/lib/chat-search";
 import {
   MAIN_TAB_HREFS,
   readMainTabFromPath,
@@ -50,7 +53,10 @@ import {
   hasSeenComputerHint,
   markComputerHintSeen,
 } from "../../src/lib/computer-hint";
-import { TopBarStatusProvider } from "../../src/lib/top-bar-status";
+import {
+  TopBarStatusProvider,
+  type DesktopConnection,
+} from "../../src/lib/top-bar-status";
 
 type TabId = MainTabId;
 
@@ -63,6 +69,10 @@ const TABS: {
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
   { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
+
+// Message search is built but hidden for now — flip to true to surface the
+// top-bar search button (chat + computer chat).
+const SHOW_SEARCH_BUTTON = false;
 
 const SIDEBAR_WIDTH = 320;
 /** How far the foreground slides right when the drawer opens. Decoupled
@@ -139,17 +149,14 @@ export default function MainLayout() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [consentVisible, setConsentVisible] = useState(false);
-  const [topBarSyncing, setTopBarSyncing] = useState(false);
+  const [connection, setConnection] = useState<DesktopConnection | null>(null);
   // First-time hint dot on the Computer icon, dismissed once the user opens
   // the Computer tab.
   const [showComputerHint, setShowComputerHint] = useState(false);
   const colors = useColors();
   const { isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const topBarStatus = useMemo(
-    () => ({ setSyncing: setTopBarSyncing }),
-    [],
-  );
+  const topBarStatus = useMemo(() => ({ setConnection }), []);
 
   useEffect(() => {
     if (!hasAiConsent()) {
@@ -182,6 +189,16 @@ export default function MainLayout() {
 
   const activeTab = readActiveTab(pathname);
   const onComputer = pathname === "/computer";
+  const onChatSurface = pathname === "/chat" || pathname === "/computer";
+
+  const search = useChatSearch();
+  // Collapse + clear search whenever the route changes (e.g. switching tabs or
+  // toggling between Chat and Computer) so search never leaks across surfaces.
+  useEffect(() => {
+    search.close();
+    // `search.close` is stable; only react to route changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
   useEffect(() => {
     if (activeTab) {
@@ -366,49 +383,135 @@ export default function MainLayout() {
                   { height: insets.top + TOP_BAR_BAR_HEIGHT },
                 ]}
               >
-                <View style={styles.topBarSide}>
-                  <Pressable
-                    onPress={openSidebar}
-                    hitSlop={8}
-                    accessibilityLabel="Open navigation"
-                    style={styles.hamburger}
-                  >
-                    <Icon name="menu" size={22} color={colors.text} weight="semibold" />
-                  </Pressable>
-                </View>
-                <View style={styles.topBarCenter} pointerEvents="none">
-                  {topBarSyncing ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={colors.textMuted}
-                      accessibilityLabel="Syncing computer chat"
-                    />
-                  ) : (
-                    <StellaBrandMark compact />
-                  )}
-                </View>
-                <View style={styles.topBarSide}>
-                  <Pressable
-                    onPress={() =>
-                      router.replace(onComputer ? "/chat" : "/computer")
-                    }
-                    hitSlop={8}
-                    accessibilityLabel={
-                      onComputer ? "Back to chat" : "Open computer chat"
-                    }
-                    style={styles.hamburger}
-                  >
-                    <Icon
-                      name={onComputer ? "message-square" : "monitor"}
-                      size={22}
-                      color={colors.text}
-                      weight="regular"
-                    />
-                    {!onComputer && showComputerHint ? (
-                      <View style={styles.computerHintDot} />
+                {search.isOpen ? (
+                  <View style={styles.searchRow}>
+                    <View style={styles.searchField}>
+                      <Icon name="search" size={16} color={colors.textMuted} />
+                      <TextInput
+                        style={styles.searchInput}
+                        value={search.query}
+                        onChangeText={search.setQuery}
+                        placeholder="Search messages"
+                        placeholderTextColor={fadeHex(colors.textMuted, 0.6)}
+                        selectionColor={colors.accent}
+                        autoFocus
+                        autoCorrect={false}
+                        returnKeyType="search"
+                      />
+                      {search.query.length > 0 ? (
+                        <Pressable
+                          onPress={() => search.setQuery("")}
+                          hitSlop={8}
+                          accessibilityLabel="Clear search"
+                        >
+                          <Icon name="x" size={15} color={colors.textMuted} />
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Pressable
+                      onPress={search.close}
+                      hitSlop={8}
+                      accessibilityLabel="Cancel search"
+                      style={styles.searchCancel}
+                    >
+                      <Text style={styles.searchCancelText}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.topBarSide}>
+                      <Pressable
+                        onPress={openSidebar}
+                        hitSlop={8}
+                        accessibilityLabel="Open navigation"
+                        style={styles.hamburger}
+                      >
+                        <Icon
+                          name="menu"
+                          size={22}
+                          color={colors.text}
+                          weight="semibold"
+                        />
+                      </Pressable>
+                    </View>
+                    <View style={{ flex: 1 }} />
+                    <View style={styles.topBarRight}>
+                      {SHOW_SEARCH_BUTTON && onChatSurface ? (
+                        <Pressable
+                          onPress={search.open}
+                          hitSlop={8}
+                          accessibilityLabel="Search messages"
+                          style={styles.hamburger}
+                        >
+                          <Icon
+                            name="search"
+                            size={21}
+                            color={colors.text}
+                            weight="regular"
+                          />
+                        </Pressable>
+                      ) : null}
+                      <Pressable
+                        onPress={() =>
+                          router.replace(onComputer ? "/chat" : "/computer")
+                        }
+                        hitSlop={8}
+                        accessibilityLabel={
+                          onComputer ? "Back to chat" : "Open computer chat"
+                        }
+                        style={styles.hamburger}
+                      >
+                        <Icon
+                          name={onComputer ? "message-square" : "monitor"}
+                          size={22}
+                          color={colors.text}
+                          weight="regular"
+                        />
+                        {!onComputer && showComputerHint ? (
+                          <View style={styles.computerHintDot} />
+                        ) : null}
+                      </Pressable>
+                    </View>
+                    {onComputer && connection ? (
+                      <View style={styles.topBarBrand} pointerEvents="none">
+                        {connection === "connecting" ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={colors.textMuted}
+                            accessibilityLabel="Connecting to your computer"
+                          />
+                        ) : (
+                          <View
+                            style={styles.connectionBadge}
+                            accessibilityLabel={
+                              connection === "connected"
+                                ? "Computer connected"
+                                : "Computer disconnected"
+                            }
+                          >
+                            <Icon
+                              name="monitor"
+                              size={20}
+                              color={colors.text}
+                              weight="regular"
+                            />
+                            <View
+                              style={[
+                                styles.connectionDot,
+                                {
+                                  backgroundColor:
+                                    connection === "connected"
+                                      ? colors.ok
+                                      : colors.danger,
+                                },
+                              ]}
+                            />
+                          </View>
+                        )}
+                      </View>
                     ) : null}
-                  </Pressable>
-                </View>
+                  </>
+                )}
               </View>
 
               <View style={styles.content}>
@@ -474,11 +577,22 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     justifyContent: "center",
     width: 44,
   },
-  topBarCenter: {
+  // Right-side action cluster (search + chat/computer toggle).
+  topBarRight: {
     alignItems: "center",
-    flex: 1,
+    flexDirection: "row",
+    height: 44,
+  },
+  // Brand/sync indicator, absolutely centered across the whole bar so it stays
+  // screen-centered regardless of how many action buttons flank it.
+  topBarBrand: {
+    alignItems: "center",
+    bottom: 0,
+    height: 44,
     justifyContent: "center",
-    minHeight: 44,
+    left: 0,
+    position: "absolute",
+    right: 0,
   },
   topBarAction: {
     alignItems: "center",
@@ -486,11 +600,68 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     justifyContent: "center",
     width: 44,
   },
+  // Expanded search field that replaces the top-bar contents.
+  searchRow: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    height: 44,
+    paddingLeft: 8,
+  },
+  searchField: {
+    alignItems: "center",
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    height: 36,
+    paddingHorizontal: 10,
+  },
+  searchInput: {
+    color: colors.text,
+    flex: 1,
+    fontFamily: fonts.sans.regular,
+    fontSize: 16,
+    padding: 0,
+  },
+  searchCancel: {
+    alignItems: "center",
+    height: 44,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  searchCancelText: {
+    color: colors.accent,
+    fontFamily: fonts.sans.medium,
+    fontSize: 15,
+  },
   hamburger: {
     alignItems: "center",
     height: 44,
     justifyContent: "center",
     width: 44,
+  },
+  // Desktop connection badge in the bar center (computer chat): monitor glyph
+  // with a status dot pinned to its top-right.
+  connectionBadge: {
+    alignItems: "center",
+    height: 28,
+    justifyContent: "center",
+    width: 28,
+  },
+  connectionDot: {
+    borderColor: colors.background,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    bottom: 1,
+    height: 8,
+    position: "absolute",
+    right: 1,
+    width: 8,
   },
   // First-time hint dot, pinned to the top-right of the 22px monitor glyph
   // (which is centered in the 44px button).

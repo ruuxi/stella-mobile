@@ -33,6 +33,7 @@ export type IconName =
   | "volume-x"
   | "settings"
   | "more-horizontal"
+  | "search"
   | "user"
   | "stop"
   | "eye"
@@ -67,6 +68,7 @@ const FEATHER_NAMES: Record<
   "volume-x": "volume-x",
   settings: "settings",
   "more-horizontal": "more-horizontal",
+  search: "search",
   user: "user",
   stop: "square",
   eye: "eye",
@@ -99,6 +101,7 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "volume-x": "speaker.slash",
   settings: "gearshape",
   "more-horizontal": "ellipsis",
+  search: "magnifyingglass",
   user: "person.crop.circle",
   stop: "stop.fill",
   eye: "eye",
