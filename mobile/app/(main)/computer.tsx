@@ -627,6 +627,23 @@ function AuthenticatedComputerChat() {
     [styles],
   );
 
+  // The most recent artifacts in the conversation, newest first and
+  // de-duplicated, for the Artifacts list sheet. Capped so a long history
+  // doesn't grow the list unbounded.
+  const conversationArtifacts = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ChatArtifact[] = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      for (const artifact of messages[i].artifacts ?? []) {
+        if (seen.has(artifact.id)) continue;
+        seen.add(artifact.id);
+        out.push(artifact);
+        if (out.length >= MAX_LISTED_ARTIFACTS) return out;
+      }
+    }
+    return out;
+  }, [messages]);
+
   // Unpaired: take over the entire surface with the pair CTA. We
   // deliberately do not render `ChatPane` here — `loadComputerChatMessages`
   // can rehydrate prior conversations from AsyncStorage, and we don't
@@ -667,23 +684,6 @@ function AuthenticatedComputerChat() {
 
   const canSubmit =
     draft.trim().length > 0 && paired === true && Boolean(phoneAccess);
-
-  // The most recent artifacts in the conversation, newest first and
-  // de-duplicated, for the Artifacts list sheet. Capped so a long history
-  // doesn't grow the list unbounded.
-  const conversationArtifacts = useMemo(() => {
-    const seen = new Set<string>();
-    const out: ChatArtifact[] = [];
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      for (const artifact of messages[i].artifacts ?? []) {
-        if (seen.has(artifact.id)) continue;
-        seen.add(artifact.id);
-        out.push(artifact);
-        if (out.length >= MAX_LISTED_ARTIFACTS) return out;
-      }
-    }
-    return out;
-  }, [messages]);
 
   return (
     <View style={styles.syncSurface}>
