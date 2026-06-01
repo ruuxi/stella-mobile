@@ -8,8 +8,8 @@ import {
 import type { ChatArtifact, ChatMessage } from "../types";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
-const DESKTOP_WAKE_ATTEMPTS = 15;
-const DESKTOP_WAKE_RETRY_MS = 1_000;
+const DESKTOP_WAKE_ATTEMPTS = 5;
+const DESKTOP_WAKE_RETRY_MS = 3_000;
 const BRIDGE_INVOKE_TIMEOUT_MS = 10_000;
 const BRIDGE_HEALTH_TIMEOUT_MS = 3_000;
 const BRIDGE_SYNC_TIMEOUT_MS = 5_000;
