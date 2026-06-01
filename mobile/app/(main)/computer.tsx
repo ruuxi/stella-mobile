@@ -24,6 +24,7 @@ import {
   sendDesktopBridgeChat,
   syncDesktopBridgeChatMessages,
 } from "../../src/lib/desktop-bridge-chat";
+import { createStreamTextSmoother } from "../../src/lib/stream-text-smoother";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { notifySuccess } from "../../src/lib/haptics";
 import { useComputerModelSettings } from "../../src/lib/use-computer-model-settings";
@@ -378,7 +379,18 @@ function AuthenticatedComputerChat() {
         { id: replyId, role: "assistant", text: "" },
       ]);
 
+      const textSmoother = createStreamTextSmoother({
+        appendText: (chunk) => {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === replyId ? { ...msg, text: msg.text + chunk } : msg,
+            ),
+          );
+        },
+      });
+
       if (!phoneAccess) {
+        textSmoother.cancel();
         activeDispatchRef.current = null;
         setMessages((m) =>
           m.map((msg) =>
@@ -400,6 +412,10 @@ function AuthenticatedComputerChat() {
           access: phoneAccess,
           message: item.text,
           signal: abort.signal,
+          onTextDelta: (delta) => {
+            if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
+            textSmoother.push(delta);
+          },
           onArtifacts: (artifacts) => {
             if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
             setMessages((m) =>
@@ -414,6 +430,7 @@ function AuthenticatedComputerChat() {
           setSending(false);
           return;
         }
+        await textSmoother.drain();
         activeDispatchRef.current = null;
         setLastOk(true);
         setMessages((m) =>
@@ -478,14 +495,19 @@ function AuthenticatedComputerChat() {
           return;
         }
         setLastOk(false);
+        textSmoother.flushNow();
         const message = userFacingError(e);
         setMessages((m) =>
           m.map((msg) =>
-            msg.id === replyId ? { ...msg, text: message } : msg,
+            msg.id === replyId
+              ? { ...msg, text: msg.text || message }
+              : msg,
           ),
         );
         setSending(false);
         drainQueueRef.current?.();
+      } finally {
+        textSmoother.cancel();
       }
     },
     [beginSyncIndicator, persistSyncState, phoneAccess],

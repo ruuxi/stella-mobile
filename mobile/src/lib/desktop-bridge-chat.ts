@@ -43,6 +43,7 @@ type DesktopBridgeChatArgs = {
   message: string;
   model?: string | null;
   signal?: AbortSignal;
+  onTextDelta?: (delta: string) => void;
   onArtifacts?: (artifacts: ChatArtifact[]) => void;
 };
 
@@ -518,6 +519,7 @@ export async function sendDesktopBridgeChat({
   message,
   model,
   signal,
+  onTextDelta,
   onArtifacts,
 }: DesktopBridgeChatArgs): Promise<DesktopBridgeChatResult> {
   const text = message.trim();
@@ -655,6 +657,13 @@ export async function sendDesktopBridgeChat({
             runId = eventRunId;
           }
 
+          if (event.type === "stream") {
+            const chunk = asString(event.chunk);
+            if (chunk) {
+              onTextDelta?.(chunk);
+            }
+            return;
+          }
           if (event.type === "run-finished") {
             void finish(resolveOnce, rejectOnce, event);
           }
