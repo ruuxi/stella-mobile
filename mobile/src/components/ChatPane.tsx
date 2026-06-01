@@ -1446,6 +1446,7 @@ export function ChatPane({
     tapMedium();
     onSubmit();
     scroll.nudgeAfterSend();
+    Keyboard.dismiss();
   }, [onSubmit, scroll.nudgeAfterSend]);
 
   const dictationHeadersMemo = useMemo(

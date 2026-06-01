@@ -683,7 +683,10 @@ function AuthenticatedComputerChat() {
   }
 
   const canSubmit =
-    draft.trim().length > 0 && paired === true && Boolean(phoneAccess);
+    draft.trim().length > 0 &&
+    paired === true &&
+    Boolean(phoneAccess) &&
+    connection === "connected";
 
   return (
     <View style={styles.syncSurface}>
