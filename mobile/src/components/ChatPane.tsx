@@ -1363,16 +1363,37 @@ export function ChatPane({
   // When the keyboard rises while the user is at/near the bottom, pull the
   // chat up so the keyboard doesn't cover the latest messages. If the user
   // is reading further up, leave their scroll position alone.
+  //
+  // The list's reserved bottom inset is driven by `footerHeight`, which only
+  // grows a frame *after* `keyboardHeight` changes (the footer re-renders with
+  // the keyboard pad, then reports its taller size via onLayout). Scrolling
+  // immediately off `keyboardHeight` therefore races that layout pass and often
+  // lands short — the keyboard ends up covering the tail. That timing race is
+  // why it feels inconsistent. So we record the intent here and do the
+  // authoritative scroll once `footerHeight` reflects the keyboard below.
   const prevKeyboardHeightRef = useRef(0);
+  const pinTailForKeyboardRef = useRef(false);
   useEffect(() => {
     const prev = prevKeyboardHeightRef.current;
     prevKeyboardHeightRef.current = keyboardHeight;
     if (keyboardHeight > prev && !scroll.awayFromBottom) {
+      pinTailForKeyboardRef.current = true;
       requestAnimationFrame(() =>
         scroll.listRef.current?.scrollToEnd({ animated: true }),
       );
+    } else if (keyboardHeight === 0) {
+      pinTailForKeyboardRef.current = false;
     }
   }, [keyboardHeight, scroll.awayFromBottom, scroll.listRef]);
+
+  // The list's bottom inset just grew to include the keyboard — this is the
+  // layout pass the keyboard effect above was racing, so finish pinning to the
+  // tail now that there's actually room to scroll into.
+  useEffect(() => {
+    if (!pinTailForKeyboardRef.current) return;
+    pinTailForKeyboardRef.current = false;
+    scroll.listRef.current?.scrollToEnd({ animated: true });
+  }, [footerHeight, scroll.listRef]);
 
   useEffect(() => {
     const grew = messages.length > prevLenRef.current;
