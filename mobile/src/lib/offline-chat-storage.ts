@@ -35,6 +35,9 @@ function parseRow(row: unknown): ChatMessage | null {
   const artifacts = parseChatArtifacts(o.artifacts, conversationId);
   return {
     id: o.id,
+    ...(typeof o.canonicalId === "string" && o.canonicalId.trim()
+      ? { canonicalId: o.canonicalId.trim() }
+      : {}),
     role: o.role,
     text: o.text,
     ...(artifacts.length > 0 ? { artifacts } : {}),

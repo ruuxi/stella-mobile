@@ -53,14 +53,68 @@ const mergeMessagesById = (
   const byId = new Map(current.map((message) => [message.id, message]));
   const order = current.map((message) => message.id);
   for (const message of incoming) {
-    if (!byId.has(message.id)) {
-      order.push(message.id);
+    const existing = current.find(
+      (candidate) =>
+        candidate.id === message.id || candidate.canonicalId === message.id,
+    );
+    const id = existing?.id ?? message.id;
+    if (!byId.has(id)) {
+      order.push(id);
     }
-    byId.set(message.id, message);
+    byId.set(
+      id,
+      existing ? { ...message, id, canonicalId: message.id } : message,
+    );
   }
   return order
     .map((id) => byId.get(id))
     .filter((message): message is ChatMessage => Boolean(message));
+};
+
+const reconcileSentComputerTurn = ({
+  current,
+  userMessageId,
+  replyId,
+  sentText,
+  canonicalMessages,
+}: {
+  current: ChatMessage[];
+  userMessageId: string;
+  replyId: string;
+  sentText: string;
+  canonicalMessages: ChatMessage[];
+}): ChatMessage[] => {
+  const canonicalUser =
+    canonicalMessages.find(
+      (message) => message.role === "user" && message.text.trim() === sentText,
+    ) ?? canonicalMessages.find((message) => message.role === "user");
+  const canonicalAssistant = [...canonicalMessages]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  const consumed = new Set<string>();
+  const next = current.map((message) => {
+    if (message.id === userMessageId && canonicalUser) {
+      consumed.add(canonicalUser.id);
+      return {
+        ...canonicalUser,
+        id: message.id,
+        canonicalId: canonicalUser.id,
+      };
+    }
+    if (message.id === replyId && canonicalAssistant) {
+      consumed.add(canonicalAssistant.id);
+      return {
+        ...canonicalAssistant,
+        id: message.id,
+        canonicalId: canonicalAssistant.id,
+      };
+    }
+    return message;
+  });
+  return mergeMessagesById(
+    next,
+    canonicalMessages.filter((message) => !consumed.has(message.id)),
+  );
 };
 
 export default function ComputerChatScreen() {
@@ -472,12 +526,13 @@ function AuthenticatedComputerChat() {
             );
             if (!hasCanonicalAssistant) return;
             setMessages((m) =>
-              mergeMessagesById(
-                m.filter(
-                  (msg) => msg.id !== item.userMessageId && msg.id !== replyId,
-                ),
-                delta.messages,
-              ),
+              reconcileSentComputerTurn({
+                current: m,
+                userMessageId: item.userMessageId,
+                replyId,
+                sentText: item.text,
+                canonicalMessages: delta.messages,
+              }),
             );
           })
           .catch(() => {

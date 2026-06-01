@@ -65,6 +65,11 @@ export type ChatArtifact = {
 
 export type ChatMessage = {
   id: string;
+  /**
+   * Desktop-local message id this row reconciled to. Mobile keeps `id` stable
+   * for the just-streamed row so sync does not remount the bubble.
+   */
+  canonicalId?: string;
   role: "assistant" | "user";
   text: string;
   artifacts?: ChatArtifact[];
