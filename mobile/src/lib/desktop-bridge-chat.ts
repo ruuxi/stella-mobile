@@ -8,9 +8,10 @@ import {
 import type { ChatArtifact, ChatMessage } from "../types";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
-const DESKTOP_WAKE_ATTEMPTS = 8;
+const DESKTOP_WAKE_ATTEMPTS = 24;
 const DESKTOP_WAKE_RETRY_MS = 1_000;
 const BRIDGE_INVOKE_TIMEOUT_MS = 10_000;
+const BRIDGE_HEALTH_TIMEOUT_MS = 3_000;
 const BRIDGE_SYNC_TIMEOUT_MS = 5_000;
 const BRIDGE_RUN_TIMEOUT_MS = 45_000;
 const DEFAULT_HISTORY_LIMIT = 100;
@@ -82,6 +83,16 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 const asString = (value: unknown): string =>
   typeof value === "string" ? value : "";
 
+const isNetworkFailure = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("network") ||
+    lower.includes("fetch") ||
+    lower.includes("failed to connect")
+  );
+};
+
 export const normalizeDesktopChatMessageText = (text: string) =>
   FULL_SYSTEM_REMINDER_TAG_RE.test(text)
     ? ""
@@ -111,22 +122,50 @@ const toWebSocketUrl = (baseUrl: string) => {
   return url.toString();
 };
 
+const canReachBridgeHealth = async (baseUrl: string) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRIDGE_HEALTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${baseUrl}/bridge/health`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export async function resolveDesktopBridge(
   access: StoredPhoneAccess,
 ): Promise<DesktopBridgeConnection> {
   await requestDesktopConnection(access);
 
   let baseUrl = "";
+  let lastCandidateUrl = "";
   for (let attempt = 0; attempt < DESKTOP_WAKE_ATTEMPTS; attempt += 1) {
     const status = await getDesktopBridgeStatus(access.desktopDeviceId);
     const firstUrl = status.baseUrls.find((url) => url.trim().length > 0);
     if (status.available && firstUrl) {
-      baseUrl = trimTrailingSlash(firstUrl);
-      break;
+      const candidateUrl = trimTrailingSlash(firstUrl);
+      lastCandidateUrl = candidateUrl;
+      if (await canReachBridgeHealth(candidateUrl)) {
+        baseUrl = candidateUrl;
+        break;
+      }
     }
     if (attempt < DESKTOP_WAKE_ATTEMPTS - 1) {
       await sleep(DESKTOP_WAKE_RETRY_MS);
     }
+  }
+
+  // Prefer a health-confirmed URL, but if the desktop advertised one and the
+  // probe never passed (e.g. an older desktop without /bridge/health, or a slow
+  // edge), try it anyway rather than blocking the user.
+  if (!baseUrl && lastCandidateUrl) {
+    baseUrl = lastCandidateUrl;
   }
 
   if (!baseUrl) {
@@ -174,6 +213,11 @@ export async function invokeDesktopBridge<T>(
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error("Desktop bridge request timed out.");
+    }
+    if (isNetworkFailure(error)) {
+      throw new Error(
+        "Could not reach your desktop tunnel. Keep Stella open on your desktop and try again.",
+      );
     }
     throw error;
   } finally {
