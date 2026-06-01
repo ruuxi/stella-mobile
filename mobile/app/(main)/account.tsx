@@ -30,7 +30,6 @@ import {
   subscribeNotificationsMuted,
 } from "../../src/lib/notifications-prefs";
 import { unregisterForPushNotifications } from "../../src/lib/notifications";
-import { GlassCard } from "../../src/components/GlassCard";
 import { type Colors } from "../../src/theme/colors";
 import {
   useColors,
@@ -486,12 +485,7 @@ export default function AccountScreen() {
                 const removing =
                   removingDesktopId === access.desktopDeviceId;
                 return (
-                  <GlassCard
-                    key={access.desktopDeviceId}
-                    radius={12}
-                    ringed
-                    style={styles.pairedRow}
-                  >
+                  <View key={access.desktopDeviceId} style={styles.pairedRow}>
                     <View style={styles.pairedCopy}>
                       <Text style={styles.pairedName}>{label}</Text>
                       <Text style={styles.pairedSub}>
@@ -516,7 +510,7 @@ export default function AccountScreen() {
                         {removing ? "\u2026" : "Forget"}
                       </Text>
                     </Pressable>
-                  </GlassCard>
+                  </View>
                 );
               })}
             </View>
@@ -527,32 +521,28 @@ export default function AccountScreen() {
       <View style={styles.separator} />
 
       <View style={styles.legalBlock}>
-        <GlassCard radius={12} ringed style={styles.legalRowWrap}>
-          <Pressable
-            onPress={() => void Linking.openURL("https://stella.sh/terms")}
-            accessibilityLabel="Open Terms of Service"
-            style={({ pressed }) => [
-              styles.legalRow,
-              pressed && styles.legalRowPressed,
-            ]}
-          >
-            <Text style={styles.legalLabel}>Terms of Service</Text>
-            <Text style={styles.legalChevron}>›</Text>
-          </Pressable>
-        </GlassCard>
-        <GlassCard radius={12} ringed style={styles.legalRowWrap}>
-          <Pressable
-            onPress={() => void Linking.openURL("https://stella.sh/privacy")}
-            accessibilityLabel="Open Privacy Policy"
-            style={({ pressed }) => [
-              styles.legalRow,
-              pressed && styles.legalRowPressed,
-            ]}
-          >
-            <Text style={styles.legalLabel}>Privacy Policy</Text>
-            <Text style={styles.legalChevron}>›</Text>
-          </Pressable>
-        </GlassCard>
+        <Pressable
+          onPress={() => void Linking.openURL("https://stella.sh/terms")}
+          accessibilityLabel="Open Terms of Service"
+          style={({ pressed }) => [
+            styles.legalRow,
+            pressed && styles.legalRowPressed,
+          ]}
+        >
+          <Text style={styles.legalLabel}>Terms of Service</Text>
+          <Text style={styles.legalChevron}>›</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => void Linking.openURL("https://stella.sh/privacy")}
+          accessibilityLabel="Open Privacy Policy"
+          style={({ pressed }) => [
+            styles.legalRow,
+            pressed && styles.legalRowPressed,
+          ]}
+        >
+          <Text style={styles.legalLabel}>Privacy Policy</Text>
+          <Text style={styles.legalChevron}>›</Text>
+        </Pressable>
       </View>
 
       {isSignedIn ? (
@@ -811,8 +801,7 @@ const makeStyles = (colors: Colors) =>
       alignItems: "center",
       flexDirection: "row",
       gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
+      paddingVertical: 10,
     },
     pairedCopy: {
       flex: 1,
@@ -846,17 +835,15 @@ const makeStyles = (colors: Colors) =>
       letterSpacing: -0.1,
     },
     legalBlock: {
-      gap: 4,
+      gap: 2,
       marginBottom: 12,
-      marginTop: 8,
+      marginTop: 4,
     },
-    legalRowWrap: {},
     legalRow: {
       alignItems: "center",
       flexDirection: "row",
       justifyContent: "space-between",
-      paddingHorizontal: 14,
-      paddingVertical: 12,
+      paddingVertical: 10,
     },
     legalRowPressed: {
       opacity: 0.85,

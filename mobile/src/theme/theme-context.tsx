@@ -98,18 +98,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     void AsyncStorage.setItem(GRADIENT_KEY, mode);
   };
 
-  // Propagate the JS theme preference down to UIKit so system chrome (Liquid
-  // Glass surfaces, native popovers, the keyboard appearance, the status bar
-  // trait, etc.) follows the in-app picker rather than the OS-level setting.
-  // Without this, picking "Light" while the phone is in dark mode leaves
-  // every `GlassView`/`GlassCard` rendering dark over the light JS palette.
-  useEffect(() => {
-    if (!loaded) return;
-    Appearance.setColorScheme(
-      preference === "system" ? "unspecified" : preference,
-    );
-  }, [loaded, preference]);
-
   const prefersDark =
     preference === "system" ? systemScheme === "dark" : preference === "dark";
 
@@ -120,6 +108,24 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const isDark = theme.forcedMode
     ? theme.forcedMode === "dark"
     : prefersDark;
+
+  // Propagate the *resolved* appearance down to UIKit so system chrome (Liquid
+  // Glass surfaces, native popovers, the keyboard appearance, the status bar
+  // trait, etc.) matches the JS palette we actually render. We follow the
+  // theme's `forcedMode` first — otherwise Pearl (forced light) over a dark OS,
+  // or Noir (forced dark) over a light OS, leaves native glass rendering the
+  // wrong scheme so it collides with the text color (e.g. light glass + light
+  // text). Only when the theme has no forced mode do we defer to the picker.
+  useEffect(() => {
+    if (!loaded) return;
+    Appearance.setColorScheme(
+      theme.forcedMode
+        ? theme.forcedMode
+        : preference === "system"
+          ? "unspecified"
+          : preference,
+    );
+  }, [loaded, preference, theme.forcedMode]);
   const colors = isDark ? theme.dark : theme.light;
   // Pearl/Noir are standardized single-surface themes — desktop coerces them
   // to flat (no gradient blob) regardless of preference, so do the same here.
