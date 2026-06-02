@@ -1819,9 +1819,10 @@ export function ChatPane({
               keyboardDismissMode="on-drag"
               fadingEdgeLength={EDGE_FADE}
               // Open at the latest message every time the tab mounts, instead
-              // of landing at the top of history.
+              // of landing at the top of history. Short conversations that
+              // don't fill the viewport read top-down (no `alignItemsAtEnd`)
+              // so the first message sits at the top rather than the bottom.
               initialScrollAtEnd
-              alignItemsAtEnd
               // Keep the visible message anchored when the data array changes
               // (e.g. messages syncing in from the desktop) so the list never
               // snaps back to the top.
