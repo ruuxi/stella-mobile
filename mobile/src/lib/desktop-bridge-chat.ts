@@ -24,6 +24,7 @@ const BRIDGE_RECONNECT_MAX_ATTEMPTS = 4;
 const BRIDGE_RECONNECT_BASE_DELAY_MS = 400;
 const BRIDGE_RECONNECT_MAX_DELAY_MS = 4_000;
 const DEFAULT_HISTORY_LIMIT = 100;
+const DEVELOPER_RESOURCE_PREVIEWS_KEY = "stella-developer-resource-previews";
 const TIME_TAG_PATTERN =
   "(?:1[0-2]|0?[1-9]):[0-5]\\d\\s?(?:AM|PM)(?:,\\s+[A-Za-z]{3}\\s+\\d{1,2})?";
 const SYSTEM_REMINDER_OPEN_TAG = "<\\s*system[-_\\s]*reminder\\s*>";
@@ -45,6 +46,7 @@ const TRAILING_TIME_TAG_RE = new RegExp(
 export type DesktopBridgeConnection = {
   baseUrl: string;
   headers: Record<string, string>;
+  includeDeveloperArtifacts: boolean;
 };
 
 type DesktopBridgeChatArgs = {
@@ -153,6 +155,29 @@ const canReachBridgeHealth = async (baseUrl: string) => {
   }
 };
 
+const readDesktopDeveloperArtifactsEnabled = async (
+  baseUrl: string,
+  headers: Record<string, string>,
+) => {
+  try {
+    const response = await fetch(`${baseUrl}/bridge/bootstrap`, { headers });
+    if (!response.ok) return false;
+    const parsed = asRecord(await response.json());
+    const localStorage = asRecord(parsed?.localStorage);
+    return asString(localStorage?.[DEVELOPER_RESOURCE_PREVIEWS_KEY]) === "true";
+  } catch {
+    return false;
+  }
+};
+
+const filterDesktopBridgeArtifacts = (
+  artifacts: ChatArtifact[],
+  includeDeveloperArtifacts: boolean,
+) =>
+  includeDeveloperArtifacts
+    ? artifacts
+    : artifacts.filter((artifact) => artifact.payload.kind !== "source-diff");
+
 export async function resolveDesktopBridge(
   access: StoredPhoneAccess,
 ): Promise<DesktopBridgeConnection> {
@@ -190,12 +215,17 @@ export async function resolveDesktopBridge(
   }
 
   const token = await getConvexToken();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    ...buildPhoneAccessHeaders(access),
+  };
   return {
     baseUrl,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...buildPhoneAccessHeaders(access),
-    },
+    headers,
+    includeDeveloperArtifacts: await readDesktopDeveloperArtifactsEnabled(
+      baseUrl,
+      headers,
+    ),
   };
 }
 
@@ -274,7 +304,13 @@ async function listDesktopBridgeMessages(
   const rows = await invokeDesktopBridge<unknown[]>(
     bridge,
     "localChat:listSyncMessages",
-    [{ conversationId, maxMessages }],
+    [
+      {
+        conversationId,
+        maxMessages,
+        includeDeveloperArtifacts: bridge.includeDeveloperArtifacts,
+      },
+    ],
   );
   return parseDesktopBridgeMessageRows(rows, conversationId);
 }
@@ -353,6 +389,7 @@ export async function syncDesktopBridgeChatMessages({
           conversationId,
           sinceCursor: effectiveCursor ?? null,
           maxMessages,
+          includeDeveloperArtifacts: bridge.includeDeveloperArtifacts,
         },
       ],
       BRIDGE_SYNC_TIMEOUT_MS,
@@ -825,7 +862,12 @@ export async function sendDesktopBridgeChat({
         ws,
         (channel, data) => {
           if (channel === "display:update") {
-            mergeArtifacts(parseChatArtifacts([data], conversationId));
+            mergeArtifacts(
+              filterDesktopBridgeArtifacts(
+                parseChatArtifacts([data], conversationId),
+                activeBridge.includeDeveloperArtifacts,
+              ),
+            );
             return;
           }
           if (channel === "agent:event") {
