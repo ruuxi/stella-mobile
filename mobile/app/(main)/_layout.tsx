@@ -67,6 +67,7 @@ const TABS: {
   href: string;
 }[] = [
   { id: "chat", label: "Chat", icon: "message-square", href: "/chat" },
+  { id: "computer", label: "Computer", icon: "monitor", href: "/computer" },
   { id: "account", label: "Settings", icon: "settings", href: "/account" },
 ];
 
@@ -94,12 +95,14 @@ function Sidebar({
   colors,
   styles,
   tabs,
+  showComputerHint,
 }: {
   activeTab: TabId | null;
   onSelectTab: (tab: TabId) => void;
   colors: Colors;
   styles: ReturnType<typeof makeStyles>;
   tabs: typeof TABS;
+  showComputerHint: boolean;
 }) {
   const insets = useSafeAreaInsets();
   return (
@@ -121,13 +124,17 @@ function Sidebar({
                 pressed && styles.navItemPressed,
               ]}
             >
-              <Icon
-                name={tab.icon}
-                size={18}
-                color={active ? colors.accent : colors.textMuted}
-                style={styles.navIcon}
-                filled={active}
-              />
+              <View style={styles.navIcon}>
+                <Icon
+                  name={tab.icon}
+                  size={18}
+                  color={active ? colors.accent : colors.textMuted}
+                  filled={active}
+                />
+                {tab.id === "computer" && showComputerHint && !active ? (
+                  <View style={styles.navHintDot} />
+                ) : null}
+              </View>
               <Text
                 style={[styles.navLabel, active && styles.navLabelActive]}
               >
@@ -332,7 +339,14 @@ export default function MainLayout() {
         <>
           <AppBackdrop />
           <View style={styles.wideLayout}>
-            <Sidebar activeTab={activeTab} onSelectTab={navigate} colors={colors} styles={styles} tabs={TABS} />
+            <Sidebar
+              activeTab={activeTab}
+              onSelectTab={navigate}
+              colors={colors}
+              styles={styles}
+              tabs={TABS}
+              showComputerHint={showComputerHint}
+            />
             <View style={styles.content}>
               <View style={styles.contentSlot}>
                 <TopBarStatusProvider value={topBarStatus}>
@@ -363,6 +377,7 @@ export default function MainLayout() {
               colors={colors}
               styles={styles}
               tabs={TABS}
+              showComputerHint={showComputerHint}
             />
           </Animated.View>
 
@@ -451,26 +466,6 @@ export default function MainLayout() {
                           />
                         </Pressable>
                       ) : null}
-                      <Pressable
-                        onPress={() =>
-                          router.replace(onComputer ? "/chat" : "/computer")
-                        }
-                        hitSlop={8}
-                        accessibilityLabel={
-                          onComputer ? "Back to chat" : "Open computer chat"
-                        }
-                        style={styles.hamburger}
-                      >
-                        <Icon
-                          name={onComputer ? "message-square" : "monitor"}
-                          size={22}
-                          color={colors.text}
-                          weight="regular"
-                        />
-                        {!onComputer && showComputerHint ? (
-                          <View style={styles.computerHintDot} />
-                        ) : null}
-                      </Pressable>
                     </View>
                     {onComputer && connection ? (
                       <View style={styles.topBarBrand} pointerEvents="none">
@@ -663,19 +658,6 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     right: 1,
     width: 8,
   },
-  // First-time hint dot, pinned to the top-right of the 22px monitor glyph
-  // (which is centered in the 44px button).
-  computerHintDot: {
-    backgroundColor: colors.danger,
-    borderColor: colors.background,
-    borderRadius: 5,
-    borderWidth: 1.5,
-    height: 10,
-    position: "absolute",
-    right: 9,
-    top: 9,
-    width: 10,
-  },
   wideChatHeader: {
     alignItems: "center",
     marginBottom: 8,
@@ -710,7 +692,22 @@ const makeStyles = (colors: Colors) => StyleSheet.create({
     opacity: 0.7,
   },
   navIcon: {
+    alignItems: "center",
+    justifyContent: "center",
     width: 20,
+  },
+  // First-time hint dot on the Computer nav item, pinned to the top-right of
+  // the 18px glyph.
+  navHintDot: {
+    backgroundColor: colors.danger,
+    borderColor: colors.background,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    height: 8,
+    position: "absolute",
+    right: -1,
+    top: -1,
+    width: 8,
   },
   navLabel: {
     color: colors.text,
