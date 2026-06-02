@@ -13,7 +13,16 @@ const DESKTOP_WAKE_RETRY_MS = 3_000;
 const BRIDGE_INVOKE_TIMEOUT_MS = 10_000;
 const BRIDGE_HEALTH_TIMEOUT_MS = 3_000;
 const BRIDGE_SYNC_TIMEOUT_MS = 5_000;
+/**
+ * Max stretch of silence (no agent events) before we give up on a run. The
+ * desktop keeps the run alive across socket drops, so we reset this on every
+ * event and on every successful reconnect rather than treating it as a hard
+ * wall-clock deadline.
+ */
 const BRIDGE_RUN_TIMEOUT_MS = 45_000;
+const BRIDGE_RECONNECT_MAX_ATTEMPTS = 4;
+const BRIDGE_RECONNECT_BASE_DELAY_MS = 400;
+const BRIDGE_RECONNECT_MAX_DELAY_MS = 4_000;
 const DEFAULT_HISTORY_LIMIT = 100;
 const TIME_TAG_PATTERN =
   "(?:1[0-2]|0?[1-9]):[0-5]\\d\\s?(?:AM|PM)(?:,\\s+[A-Za-z]{3}\\s+\\d{1,2})?";
@@ -50,6 +59,11 @@ type DesktopBridgeChatArgs = {
 type DesktopBridgeChatResult = {
   text: string;
   artifacts: ChatArtifact[];
+};
+
+type DesktopBridgeMessage = ChatMessage & {
+  requestId?: string;
+  timestamp?: number;
 };
 
 export type DesktopBridgeChatSyncResult = {
@@ -256,7 +270,7 @@ async function listDesktopBridgeMessages(
   bridge: DesktopBridgeConnection,
   conversationId: string,
   maxMessages: number,
-): Promise<ChatMessage[]> {
+): Promise<DesktopBridgeMessage[]> {
   const rows = await invokeDesktopBridge<unknown[]>(
     bridge,
     "localChat:listSyncMessages",
@@ -268,7 +282,7 @@ async function listDesktopBridgeMessages(
 function parseDesktopBridgeMessageRows(
   rows: unknown[],
   conversationId: string,
-): ChatMessage[] {
+): DesktopBridgeMessage[] {
   return rows
     .filter((row): row is Record<string, unknown> => Boolean(asRecord(row)))
     .map((row) => {
@@ -277,6 +291,12 @@ function parseDesktopBridgeMessageRows(
       const role = record.role;
       const text = normalizeDesktopChatMessageText(asString(record.text));
       const artifacts = parseChatArtifacts(record.artifacts, conversationId);
+      const requestId = asString(record.requestId).trim();
+      const timestamp =
+        typeof record.timestamp === "number" &&
+        Number.isFinite(record.timestamp)
+          ? record.timestamp
+          : undefined;
       if (
         !id ||
         (role !== "user" && role !== "assistant") ||
@@ -288,6 +308,8 @@ function parseDesktopBridgeMessageRows(
         id,
         role,
         text,
+        ...(requestId ? { requestId } : {}),
+        ...(timestamp !== undefined ? { timestamp } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),
       };
     })
@@ -320,9 +342,7 @@ export async function syncDesktopBridgeChatMessages({
     BRIDGE_SYNC_TIMEOUT_MS,
   );
   const expected = expectedConversationId?.trim() || null;
-  const conversationChanged = Boolean(
-    expected && expected !== conversationId,
-  );
+  const conversationChanged = Boolean(expected && expected !== conversationId);
   const effectiveCursor = conversationChanged ? null : sinceCursor;
   const result = asRecord(
     await invokeDesktopBridge(
@@ -407,6 +427,7 @@ function openBridgeWebSocket(
 function createBridgeSocketClient(
   ws: WebSocket,
   onEvent: (channel: string, data: unknown) => void,
+  onClose?: () => void,
 ) {
   const pending = new Map<string, PendingResponse>();
 
@@ -449,6 +470,7 @@ function createBridgeSocketClient(
       callback.reject(new Error("Desktop bridge disconnected."));
     }
     pending.clear();
+    onClose?.();
   };
 
   const send = (payload: unknown) => {
@@ -496,7 +518,7 @@ function createBridgeSocketClient(
 async function readLatestAssistantMessage(
   bridge: DesktopBridgeConnection,
   conversationId: string,
-): Promise<ChatMessage | null> {
+): Promise<DesktopBridgeMessage | null> {
   const messages = await listDesktopBridgeMessages(
     bridge,
     conversationId,
@@ -514,6 +536,53 @@ async function readLatestAssistantMessage(
   return null;
 }
 
+async function readAssistantMessageForTurn(
+  bridge: DesktopBridgeConnection,
+  conversationId: string,
+  userMessageId: string,
+): Promise<DesktopBridgeMessage | null> {
+  const expectedRequestId = userMessageId.trim();
+  if (!expectedRequestId) return null;
+  const messages = await listDesktopBridgeMessages(
+    bridge,
+    conversationId,
+    DEFAULT_HISTORY_LIMIT,
+  );
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.role === "assistant" &&
+      message.requestId === expectedRequestId &&
+      (message.text.trim() || (message.artifacts?.length ?? 0) > 0)
+    ) {
+      return message;
+    }
+  }
+  return null;
+}
+
+const createClientRequestId = (conversationId: string) => {
+  const random =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `mobile:${conversationId}:${random}`;
+};
+
+type ConnectionOutcome =
+  | { kind: "finished" }
+  | { kind: "aborted" }
+  | { kind: "timeout" }
+  | { kind: "disconnected" }
+  | { kind: "fatal"; error: unknown };
+
+const isDisconnectError = (error: unknown) => {
+  if (isNetworkFailure(error)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /disconnect|timed out|could not connect|connect to your desktop/i.test(
+    message,
+  );
+};
+
 export async function sendDesktopBridgeChat({
   access,
   message,
@@ -526,17 +595,40 @@ export async function sendDesktopBridgeChat({
   if (!text) {
     throw new Error("Message is required.");
   }
+  if (signal?.aborted) {
+    throw new BridgeAbortError();
+  }
 
-  const bridge = await resolveDesktopBridge(access);
-  const conversationId = await getDesktopBridgeConversationId(bridge);
-  const ws = await openBridgeWebSocket(bridge, signal);
+  let activeBridge = await resolveDesktopBridge(access);
+  const conversationId = await getDesktopBridgeConversationId(activeBridge);
+  // Stable idempotency key: the desktop dedupes retries of this exact send, so
+  // reconnecting and re-issuing startChat can never spawn a duplicate run.
+  const clientRequestId = createClientRequestId(conversationId);
+  const startChatArgs = {
+    conversationId,
+    userPrompt: text,
+    deviceId: access.mobileDeviceId,
+    platform: "mobile",
+    mode: "computer",
+    storageMode: "local",
+    clientRequestId,
+    messageMetadata: {
+      source: "stella_mobile",
+      ...(model?.trim() ? { mobileModelPreference: model.trim() } : {}),
+    },
+  };
+
+  // ── Run state shared across reconnect attempts ──────────────────────────
+  let lastSeq = 0;
   let runId = "";
   let requestId = "";
+  let submittedUserMessageId = "";
+  let startIssued = false;
+  let runStarted = false;
   let settled = false;
-  let closeClient = () => {
-    ws.close();
-  };
-  let cancelRun = () => {};
+  let finalResult: DesktopBridgeChatResult | null = null;
+  let finalError: unknown = null;
+
   const artifactById = new Map<string, ChatArtifact>();
   const mergeArtifacts = (artifacts: ChatArtifact[]) => {
     let changed = false;
@@ -550,169 +642,338 @@ export async function sendDesktopBridgeChat({
     }
   };
 
-  const finish = async (
-    resolve: (value: DesktopBridgeChatResult) => void,
-    reject: (reason?: unknown) => void,
-    event: Record<string, unknown>,
-  ) => {
+  const buildResult = (finalText: string): DesktopBridgeChatResult => ({
+    text:
+      finalText ||
+      (artifactById.size > 0
+        ? ""
+        : "Stella finished, but did not return a message. Check the desktop app."),
+    artifacts: [...artifactById.values()],
+  });
+
+  const finalizeSuccess = (result: DesktopBridgeChatResult) => {
     if (settled) return;
     settled = true;
+    finalResult = result;
+  };
+  const finalizeError = (error: unknown) => {
+    if (settled) return;
+    settled = true;
+    finalError = error;
+  };
+
+  const eventMatchesRun = (event: Record<string, unknown>) => {
+    const eventConversationId = asString(event.conversationId);
+    if (eventConversationId && eventConversationId !== conversationId) {
+      return false;
+    }
+    const eventRequestId = asString(event.requestId);
+    const eventRunId = asString(event.runId);
+    if (requestId && eventRequestId && eventRequestId !== requestId) {
+      return false;
+    }
+    if (runId && eventRunId && eventRunId !== runId) {
+      return false;
+    }
+    return true;
+  };
+
+  const completeFromFinishedEvent = async (event: Record<string, unknown>) => {
+    if (settled) return;
     const outcome = asString(event.outcome);
     const error = asString(event.error).trim() || asString(event.reason).trim();
     if (outcome === "canceled") {
-      reject(new BridgeAbortError());
+      finalizeError(new BridgeAbortError());
       return;
     }
     if (error) {
-      reject(new Error(error));
+      finalizeError(new Error(error));
       return;
     }
     let finalText = asString(event.finalText).trim();
-    let latestAssistant: ChatMessage | null = null;
     if (!finalText || artifactById.size === 0) {
-      try {
-        latestAssistant = await readLatestAssistantMessage(
-          bridge,
-          conversationId,
-        );
-      } catch {
-        latestAssistant = null;
+      const latest = submittedUserMessageId
+        ? await readAssistantMessageForTurn(
+            activeBridge,
+            conversationId,
+            submittedUserMessageId,
+          ).catch(() => null)
+        : await readLatestAssistantMessage(activeBridge, conversationId).catch(
+            () => null,
+          );
+      if (!finalText) {
+        finalText = latest?.text.trim() ?? "";
       }
+      mergeArtifacts(latest?.artifacts ?? []);
     }
-    if (!finalText) {
-      finalText = latestAssistant?.text.trim() ?? "";
-    }
-    mergeArtifacts(latestAssistant?.artifacts ?? []);
-    finalText = normalizeDesktopChatMessageText(finalText);
-    resolve({
-      text:
-        finalText ||
-        (artifactById.size > 0
-          ? ""
-          : "Stella finished, but did not return a message. Check the desktop app."),
-      artifacts: [...artifactById.values()],
-    });
+    finalizeSuccess(buildResult(normalizeDesktopChatMessageText(finalText)));
   };
 
-  try {
-    const result = await new Promise<DesktopBridgeChatResult>(
-      async (resolve, reject) => {
-        let onAbort = () => {};
-        let timer: ReturnType<typeof setTimeout>;
-        const cleanup = () => {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", onAbort);
-        };
-        const resolveOnce = (value: DesktopBridgeChatResult) => {
-          cleanup();
-          resolve(value);
-        };
-        const rejectOnce = (reason?: unknown) => {
-          cleanup();
-          reject(reason);
-        };
-        timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          cancelRun();
-          rejectOnce(
-            new Error("Stella did not reply in time. Try again in a moment."),
-          );
-        }, BRIDGE_RUN_TIMEOUT_MS);
-        onAbort = () => {
-          if (settled) return;
-          settled = true;
-          cancelRun();
-          rejectOnce(new BridgeAbortError());
-        };
+  // Process one agent event (live broadcast or replayed via agent:resume).
+  // Resolves to true once the run reaches a terminal state. Seq-gating makes
+  // replay idempotent against events we already saw live.
+  const processAgentEvent = async (data: unknown): Promise<boolean> => {
+    const event = asRecord(data);
+    if (!event || !eventMatchesRun(event)) {
+      return false;
+    }
+    const eventRequestId = asString(event.requestId);
+    const eventRunId = asString(event.runId);
+    const eventUserMessageId = asString(event.userMessageId);
+    if (!requestId && eventRequestId) requestId = eventRequestId;
+    if (!runId && eventRunId) runId = eventRunId;
+    if (!submittedUserMessageId && eventUserMessageId) {
+      submittedUserMessageId = eventUserMessageId;
+    }
+    if (eventRunId) runStarted = true;
 
-        signal?.addEventListener("abort", onAbort);
+    const seq = typeof event.seq === "number" ? event.seq : null;
+    if (seq !== null) {
+      if (seq <= lastSeq) return false;
+      lastSeq = seq;
+    }
 
-        const socketClient = createBridgeSocketClient(ws, (channel, data) => {
+    if (event.type === "stream") {
+      const chunk = asString(event.chunk);
+      if (chunk) onTextDelta?.(chunk);
+      return false;
+    }
+    if (event.type === "run-finished") {
+      await completeFromFinishedEvent(event);
+      return true;
+    }
+    return false;
+  };
+
+  // Recover the final reply when the run completed while we were disconnected
+  // and the desktop's event buffer no longer holds the terminal event.
+  const recoverFinalFromDesktop = async (): Promise<boolean> => {
+    if (settled) return true;
+    if (!submittedUserMessageId) return false;
+    const latest = await readAssistantMessageForTurn(
+      activeBridge,
+      conversationId,
+      submittedUserMessageId,
+    ).catch(() => null);
+    if (!latest) return false;
+    mergeArtifacts(latest?.artifacts ?? []);
+    finalizeSuccess(
+      buildResult(normalizeDesktopChatMessageText(latest?.text.trim() ?? "")),
+    );
+    return true;
+  };
+
+  const runConnection = async (
+    isReconnect: boolean,
+  ): Promise<ConnectionOutcome> => {
+    let ws: WebSocket;
+    try {
+      ws = await openBridgeWebSocket(activeBridge, signal);
+    } catch (error) {
+      if (signal?.aborted) return { kind: "aborted" };
+      return { kind: "disconnected" };
+    }
+
+    return await new Promise<ConnectionOutcome>((resolve) => {
+      let outcomeSettled = false;
+      let resuming = isReconnect;
+      const pendingLive: unknown[] = [];
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+      let client: ReturnType<typeof createBridgeSocketClient>;
+
+      const onAbort = () => finish({ kind: "aborted" });
+
+      const finish = (outcome: ConnectionOutcome) => {
+        if (outcomeSettled) return;
+        outcomeSettled = true;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        signal?.removeEventListener("abort", onAbort);
+        if (
+          (outcome.kind === "aborted" || outcome.kind === "timeout") &&
+          runId
+        ) {
+          try {
+            void client.invoke("agent:cancelChat", [runId]).catch(() => {});
+          } catch {
+            // best-effort cancellation
+          }
+        }
+        client.close();
+        resolve(outcome);
+      };
+
+      const bumpInactivity = () => {
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(
+          () => finish({ kind: "timeout" }),
+          BRIDGE_RUN_TIMEOUT_MS,
+        );
+      };
+
+      const handleLiveAgentEvent = (data: unknown) => {
+        bumpInactivity();
+        if (resuming) {
+          pendingLive.push(data);
+          return;
+        }
+        void processAgentEvent(data).then((finished) => {
+          if (finished) finish({ kind: "finished" });
+        });
+      };
+
+      client = createBridgeSocketClient(
+        ws,
+        (channel, data) => {
           if (channel === "display:update") {
             mergeArtifacts(parseChatArtifacts([data], conversationId));
             return;
           }
-          if (channel !== "agent:event") return;
-          const event = asRecord(data);
-          if (!event) return;
+          if (channel === "agent:event") {
+            handleLiveAgentEvent(data);
+          }
+        },
+        () => finish({ kind: "disconnected" }),
+      );
 
-          const eventConversationId = asString(event.conversationId);
-          if (eventConversationId && eventConversationId !== conversationId) {
-            return;
-          }
+      client.subscribe("agent:event");
+      client.subscribe("display:update");
+      signal?.addEventListener("abort", onAbort);
+      bumpInactivity();
 
-          const eventRequestId = asString(event.requestId);
-          const eventRunId = asString(event.runId);
-          if (requestId && eventRequestId && eventRequestId !== requestId) {
-            return;
-          }
-          if (runId && eventRunId && eventRunId !== runId) {
-            return;
-          }
-          if (!requestId && eventRequestId) {
-            requestId = eventRequestId;
-          }
-          if (!runId && eventRunId) {
-            runId = eventRunId;
-          }
-
-          if (event.type === "stream") {
-            const chunk = asString(event.chunk);
-            if (chunk) {
-              onTextDelta?.(chunk);
-            }
-            return;
-          }
-          if (event.type === "run-finished") {
-            void finish(resolveOnce, rejectOnce, event);
-          }
-        });
-        closeClient = () => socketClient.close();
-        cancelRun = () => {
-          if (runId) {
-            void socketClient
-              .invoke("agent:cancelChat", [runId])
-              .catch(() => {});
-          }
-        };
-        socketClient.subscribe("agent:event");
-        socketClient.subscribe("display:update");
-
+      void (async () => {
         try {
-          const startResult = asRecord(
-            await socketClient.invoke(
-              "agent:startChat",
-              [
-                {
-                  conversationId,
-                  userPrompt: text,
-                  deviceId: access.mobileDeviceId,
-                  platform: "mobile",
-                  mode: "computer",
-                  storageMode: "local",
-                  messageMetadata: {
-                    source: "stella_mobile",
-                    ...(model?.trim()
-                      ? { mobileModelPreference: model.trim() }
-                      : {}),
-                  },
-                },
-              ],
-              BRIDGE_INVOKE_TIMEOUT_MS,
-            ),
-          );
-          requestId = asString(startResult?.requestId).trim() || requestId;
-        } catch (error) {
-          if (!settled) {
-            settled = true;
-            rejectOnce(error);
+          if (!runStarted) {
+            const startResult = asRecord(
+              await client.invoke(
+                "agent:startChat",
+                [startChatArgs],
+                BRIDGE_INVOKE_TIMEOUT_MS,
+              ),
+            );
+            const startedRequestId = asString(startResult?.requestId).trim();
+            if (startedRequestId) {
+              requestId = requestId || startedRequestId;
+              startIssued = true;
+            }
           }
+
+          let activeRunId = "";
+          if (isReconnect) {
+            const resume = asRecord(
+              await client.invoke(
+                "agent:resume",
+                [{ conversationId, lastSeq }],
+                BRIDGE_SYNC_TIMEOUT_MS,
+              ),
+            );
+            const activeRun = asRecord(resume?.activeRun);
+            activeRunId = asString(activeRun?.runId).trim();
+            if (activeRunId) {
+              runId = runId || activeRunId;
+              runStarted = true;
+              const activeUserMessageId = asString(
+                activeRun?.userMessageId,
+              ).trim();
+              if (!submittedUserMessageId && activeUserMessageId) {
+                submittedUserMessageId = activeUserMessageId;
+              }
+            }
+            const replayEvents = Array.isArray(resume?.events)
+              ? resume.events
+              : [];
+            for (const replayEvent of replayEvents) {
+              if (await processAgentEvent(replayEvent)) {
+                finish({ kind: "finished" });
+                return;
+              }
+            }
+          }
+
+          // Drain anything that arrived live while we were priming, in order,
+          // before switching to direct live handling. Done inside the resuming
+          // guard so no event can slip past unprocessed.
+          while (pendingLive.length > 0) {
+            const next = pendingLive.shift();
+            if (await processAgentEvent(next)) {
+              finish({ kind: "finished" });
+              return;
+            }
+          }
+          resuming = false;
+
+          // On reconnect, if the desktop reports no active run and never
+          // replayed a terminal event, the run finished while we were away.
+          if (
+            isReconnect &&
+            !settled &&
+            (runStarted || startIssued) &&
+            !activeRunId
+          ) {
+            if (await recoverFinalFromDesktop()) {
+              finish({ kind: "finished" });
+              return;
+            }
+          }
+        } catch (error) {
+          if (signal?.aborted) {
+            finish({ kind: "aborted" });
+            return;
+          }
+          if (isDisconnectError(error)) {
+            finish({ kind: "disconnected" });
+            return;
+          }
+          finalizeError(error);
+          finish({ kind: "fatal", error });
         }
-      },
+      })();
+    });
+  };
+
+  let attempt = 0;
+  let isReconnect = false;
+  while (!settled) {
+    const outcome = await runConnection(isReconnect);
+    if (settled || outcome.kind === "finished") {
+      break;
+    }
+    if (outcome.kind === "aborted") {
+      throw new BridgeAbortError();
+    }
+    if (outcome.kind === "fatal") {
+      throw finalError ?? outcome.error;
+    }
+    if (outcome.kind === "timeout") {
+      throw new Error("Stella did not reply in time. Try again in a moment.");
+    }
+    // disconnected → try to re-attach to the still-running desktop run.
+    if (attempt >= BRIDGE_RECONNECT_MAX_ATTEMPTS) {
+      await recoverFinalFromDesktop().catch(() => false);
+      if (settled) break;
+      throw new Error(
+        "Lost the connection to your desktop. Keep Stella open and try again.",
+      );
+    }
+    attempt += 1;
+    isReconnect = true;
+    const delay = Math.min(
+      BRIDGE_RECONNECT_MAX_DELAY_MS,
+      BRIDGE_RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
     );
-    return result;
-  } finally {
-    closeClient();
+    await sleep(delay);
+    if (signal?.aborted) {
+      throw new BridgeAbortError();
+    }
+    // Re-resolve in case the desktop rotated its tunnel URL or token while we
+    // were away; fall back to the last good bridge if discovery hiccups.
+    activeBridge = await resolveDesktopBridge(access).catch(() => activeBridge);
   }
+
+  if (finalError) {
+    throw finalError;
+  }
+  if (!finalResult) {
+    throw new Error("Stella did not return a response.");
+  }
+  return finalResult;
 }
