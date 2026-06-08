@@ -1,10 +1,19 @@
-import { getConvexToken } from "./auth-token";
 import {
-  buildPhoneAccessHeaders,
+  BRIDGE_CRYPTO_PROTOCOL,
+  createBridgeKeyPair,
+  decryptBridgePayload,
+  deriveBridgeCryptoSession,
+  encryptBridgePayload,
+  isBridgeEncryptedEnvelope,
+  type BridgeCryptoSession,
+} from "./bridge-crypto";
+import {
+  buildPhonePairProofHeaders,
   getDesktopBridgeStatus,
   requestDesktopConnection,
   type StoredPhoneAccess,
 } from "./phone-access";
+import { postJson } from "./http";
 import type { ChatArtifact, ChatMessage } from "../types";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
@@ -46,6 +55,7 @@ const TRAILING_TIME_TAG_RE = new RegExp(
 export type DesktopBridgeConnection = {
   baseUrl: string;
   headers: Record<string, string>;
+  crypto: BridgeCryptoSession;
   includeDeveloperArtifacts: boolean;
 };
 
@@ -79,6 +89,22 @@ type PendingResponse = {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+};
+
+type DesktopBridgeChallenge = {
+  challengeId: string;
+  challenge: string;
+  desktopDeviceId: string;
+  desktopPublicKey: string;
+  protocol: string;
+};
+
+type DesktopBridgeSessionResponse = {
+  sessionId: string;
+  sessionSecret: string;
+  expiresAt: number;
+  desktopPublicKey: string;
+  protocol: string;
 };
 
 class BridgeAbortError extends Error {
@@ -128,6 +154,109 @@ const readBridgeError = async (response: Response) => {
   const record = asRecord(parsed);
   const error = asString(record?.error).trim();
   return error || "Desktop bridge request failed.";
+};
+
+const readBridgeChallenge = async (
+  baseUrl: string,
+): Promise<DesktopBridgeChallenge> => {
+  const response = await fetch(`${baseUrl}/bridge/challenge`, {
+    method: "GET",
+  });
+  if (!response.ok) {
+    throw new Error(await readBridgeError(response));
+  }
+  const record = asRecord(await response.json());
+  const challenge = {
+    challengeId: asString(record?.challengeId).trim(),
+    challenge: asString(record?.challenge).trim(),
+    desktopDeviceId: asString(record?.desktopDeviceId).trim(),
+    desktopPublicKey: asString(record?.desktopPublicKey).trim(),
+    protocol: asString(record?.protocol).trim(),
+  };
+  if (
+    !challenge.challengeId ||
+    !challenge.challenge ||
+    !challenge.desktopDeviceId ||
+    !challenge.desktopPublicKey ||
+    challenge.protocol !== BRIDGE_CRYPTO_PROTOCOL
+  ) {
+    throw new Error("Desktop bridge did not provide a secure challenge.");
+  }
+  return challenge;
+};
+
+const readBridgeSessionResponse = (
+  value: unknown,
+): DesktopBridgeSessionResponse => {
+  const record = asRecord(value);
+  const session = {
+    sessionId: asString(record?.sessionId).trim(),
+    sessionSecret: asString(record?.sessionSecret).trim(),
+    expiresAt:
+      typeof record?.expiresAt === "number" ? record.expiresAt : Number.NaN,
+    desktopPublicKey: asString(record?.desktopPublicKey).trim(),
+    protocol: asString(record?.protocol).trim(),
+  };
+  if (
+    !session.sessionId ||
+    !session.sessionSecret ||
+    !Number.isFinite(session.expiresAt) ||
+    !session.desktopPublicKey ||
+    session.protocol !== BRIDGE_CRYPTO_PROTOCOL
+  ) {
+    throw new Error("Desktop bridge session response was invalid.");
+  }
+  return session;
+};
+
+export const createDesktopBridgeSession = async (
+  access: StoredPhoneAccess,
+  baseUrl: string,
+) => {
+  const challenge = await readBridgeChallenge(baseUrl);
+  if (challenge.desktopDeviceId !== access.desktopDeviceId) {
+    throw new Error("Desktop bridge challenge was for a different computer.");
+  }
+  const keyPair = createBridgeKeyPair();
+  const session = readBridgeSessionResponse(
+    await postJson(
+      "/api/mobile/desktop-bridge/session",
+      {
+        desktopDeviceId: access.desktopDeviceId,
+        desktopChallenge: challenge.challenge,
+        mobilePublicKey: keyPair.publicKey,
+      },
+      {
+        headers: buildPhonePairProofHeaders(
+          access,
+          challenge.challenge,
+          keyPair.publicKey,
+        ),
+      },
+    ),
+  );
+  if (
+    session.desktopPublicKey !== challenge.desktopPublicKey ||
+    session.desktopPublicKey.trim().length === 0
+  ) {
+    throw new Error("Desktop bridge public key did not match Convex.");
+  }
+  return {
+    session,
+    headers: {
+      "X-Stella-Bridge-Session-Id": session.sessionId,
+      "X-Stella-Bridge-Session-Secret": session.sessionSecret,
+      "X-Stella-Bridge-Challenge-Id": challenge.challengeId,
+      "X-Stella-Bridge-Encrypted": BRIDGE_CRYPTO_PROTOCOL,
+    },
+    crypto: deriveBridgeCryptoSession({
+      sessionId: session.sessionId,
+      secretKey: keyPair.secretKey,
+      peerPublicKey: session.desktopPublicKey,
+      mobilePublicKey: keyPair.publicKey,
+      desktopPublicKey: session.desktopPublicKey,
+    }),
+  };
 };
 
 const toWebSocketUrl = (baseUrl: string) => {
@@ -214,17 +343,14 @@ export async function resolveDesktopBridge(
     );
   }
 
-  const token = await getConvexToken();
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    ...buildPhoneAccessHeaders(access),
-  };
+  const bridgeSession = await createDesktopBridgeSession(access, baseUrl);
   return {
     baseUrl,
-    headers,
+    headers: bridgeSession.headers,
+    crypto: bridgeSession.crypto,
     includeDeveloperArtifacts: await readDesktopDeveloperArtifactsEnabled(
       baseUrl,
-      headers,
+      bridgeSession.headers,
     ),
   };
 }
@@ -238,6 +364,7 @@ export async function invokeDesktopBridge<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const encryptedBody = encryptBridgePayload(bridge.crypto, "m2d", { args });
     const response = await fetch(
       `${bridge.baseUrl}/bridge/ipc/${encodeURIComponent(channel)}`,
       {
@@ -246,15 +373,23 @@ export async function invokeDesktopBridge<T>(
           ...bridge.headers,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ args }),
+        body: JSON.stringify({ envelope: encryptedBody }),
         signal: controller.signal,
       },
     );
     if (!response.ok) {
       throw new Error(await readBridgeError(response));
     }
-    const parsed = (await response.json()) as { result?: T };
-    return parsed.result as T;
+    const responseRecord = asRecord(await response.json());
+    if (!isBridgeEncryptedEnvelope(responseRecord?.envelope)) {
+      throw new Error("Desktop bridge returned an unencrypted response.");
+    }
+    const decoded = decryptBridgePayload(
+      bridge.crypto,
+      "d2m",
+      responseRecord.envelope,
+    ) as { result?: T };
+    return decoded.result as T;
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error("Desktop bridge request timed out.");
@@ -463,6 +598,7 @@ function openBridgeWebSocket(
 
 function createBridgeSocketClient(
   ws: WebSocket,
+  cryptoSession: BridgeCryptoSession,
   onEvent: (channel: string, data: unknown) => void,
   onClose?: () => void,
 ) {
@@ -475,7 +611,12 @@ function createBridgeSocketClient(
     } catch {
       return;
     }
-    const record = asRecord(message);
+    const outerRecord = asRecord(message);
+    const record = isBridgeEncryptedEnvelope(outerRecord?.envelope)
+      ? asRecord(
+          decryptBridgePayload(cryptoSession, "d2m", outerRecord.envelope),
+        )
+      : outerRecord;
     if (!record) return;
 
     if (record.type === "event") {
@@ -514,7 +655,11 @@ function createBridgeSocketClient(
     if (ws.readyState !== WebSocket.OPEN) {
       throw new Error("Desktop bridge disconnected.");
     }
-    ws.send(JSON.stringify(payload));
+    ws.send(
+      JSON.stringify({
+        envelope: encryptBridgePayload(cryptoSession, "m2d", payload),
+      }),
+    );
   };
 
   return {
@@ -860,6 +1005,7 @@ export async function sendDesktopBridgeChat({
 
       client = createBridgeSocketClient(
         ws,
+        activeBridge.crypto,
         (channel, data) => {
           if (channel === "display:update") {
             mergeArtifacts(

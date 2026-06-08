@@ -1,6 +1,10 @@
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 import { assert, assertObject } from "./assert";
+import {
+  createBridgeProofChallenge,
+  createMobileBridgePairProof,
+} from "./bridge-crypto";
 import { getJson, postJson } from "./http";
 import type { DesktopBridgeStatus } from "../types";
 
@@ -46,7 +50,10 @@ const writePairedDesktopIds = async (ids: string[]) => {
     await SecureStore.deleteItemAsync(PAIRED_DESKTOP_IDS_KEY);
     return;
   }
-  await SecureStore.setItemAsync(PAIRED_DESKTOP_IDS_KEY, JSON.stringify(unique));
+  await SecureStore.setItemAsync(
+    PAIRED_DESKTOP_IDS_KEY,
+    JSON.stringify(unique),
+  );
 };
 
 const createMobileDeviceId = () => {
@@ -160,10 +167,28 @@ const readPlatformLabel = () => {
   }
 };
 
-export const buildPhoneAccessHeaders = (access: StoredPhoneAccess) => ({
-  "X-Stella-Mobile-Device-Id": access.mobileDeviceId,
-  "X-Stella-Mobile-Pair-Secret": access.pairSecret,
-});
+export const buildPhonePairProofHeaders = (
+  access: StoredPhoneAccess,
+  challenge: string,
+  mobilePublicKey?: string,
+) => {
+  const { issuedAt, proof } = createMobileBridgePairProof({
+    pairSecret: access.pairSecret,
+    desktopDeviceId: access.desktopDeviceId,
+    mobileDeviceId: access.mobileDeviceId,
+    challenge,
+    mobilePublicKey,
+  });
+  return {
+    "X-Stella-Mobile-Device-Id": access.mobileDeviceId,
+    "X-Stella-Mobile-Pair-Proof": proof,
+    "X-Stella-Mobile-Pair-Proof-Issued-At": String(issuedAt),
+    "X-Stella-Mobile-Pair-Proof-Challenge": challenge,
+    ...(mobilePublicKey
+      ? { "X-Stella-Mobile-Public-Key": mobilePublicKey }
+      : {}),
+  };
+};
 
 export async function getOrCreateMobileDeviceId() {
   const existing = await SecureStore.getItemAsync(MOBILE_DEVICE_ID_KEY);
@@ -193,7 +218,9 @@ export async function getPreferredPhoneAccess() {
 /**
  * All desktops this phone has paired with (same account can have several machines).
  */
-export async function listStoredPairedPhoneAccess(): Promise<StoredPhoneAccess[]> {
+export async function listStoredPairedPhoneAccess(): Promise<
+  StoredPhoneAccess[]
+> {
   let ids = await readPairedDesktopIds();
   if (ids.length === 0) {
     const fallback = await getPreferredPhoneAccess();
@@ -288,10 +315,11 @@ export async function completePhonePairing(args: {
 }
 
 export async function requestDesktopConnection(access: StoredPhoneAccess) {
+  const challenge = createBridgeProofChallenge();
   await postJson(
     "/api/mobile/desktop-bridge/request",
     { desktopDeviceId: access.desktopDeviceId },
-    { headers: buildPhoneAccessHeaders(access) },
+    { headers: buildPhonePairProofHeaders(access, challenge) },
   );
 }
 

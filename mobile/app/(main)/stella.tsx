@@ -14,9 +14,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "../../src/components/Icon";
 import { assert, assertObject } from "../../src/lib/assert";
 import { isGuest } from "../../src/lib/guest-mode";
-import { getConvexToken } from "../../src/lib/auth-token";
+import { createDesktopBridgeSession } from "../../src/lib/desktop-bridge-chat";
 import {
-  buildPhoneAccessHeaders,
   clearStoredPhoneAccess,
   completePhonePairing,
   getDesktopBridgeStatus,
@@ -56,7 +55,7 @@ const DESKTOP_WAKE_RETRY_MS = 1_000;
 
 type BridgeState = {
   bridgeUrl: string;
-  token: string;
+  headers: Record<string, string>;
   uri: string;
   bootstrap: MobileBridgeBootstrap;
   access: StoredPhoneAccess;
@@ -301,16 +300,12 @@ function AuthenticatedStellaScreen() {
 
         const baseUrl = status.baseUrls[0];
         assert(baseUrl, "Desktop bridge URL is required.");
-        const token = await getConvexToken();
-        const accessHeaders = buildPhoneAccessHeaders(access);
+        const bridgeSession = await createDesktopBridgeSession(access, baseUrl);
 
         let bootstrap = EMPTY_BRIDGE_BOOTSTRAP;
         try {
           const bootstrapRes = await fetch(`${baseUrl}/bridge/bootstrap`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              ...accessHeaders,
-            },
+            headers: bridgeSession.headers,
           });
           if (bootstrapRes.ok) {
             bootstrap = (await bootstrapRes.json()) as MobileBridgeBootstrap;
@@ -325,7 +320,7 @@ function AuthenticatedStellaScreen() {
           type: "ready",
           bridge: {
             bridgeUrl: baseUrl,
-            token,
+            headers: bridgeSession.headers,
             uri: `${baseUrl}/?mobile=1`,
             bootstrap,
             access,
@@ -583,10 +578,7 @@ function AuthenticatedStellaScreen() {
           ref={webViewRef}
           source={{
             uri: screenState.bridge.uri,
-            headers: {
-              Authorization: `Bearer ${screenState.bridge.token}`,
-              ...buildPhoneAccessHeaders(screenState.bridge.access),
-            },
+            headers: screenState.bridge.headers,
           }}
           injectedJavaScriptBeforeContentLoaded={generateShimScript(
             screenState.bridge.bridgeUrl,
