@@ -14,7 +14,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { Icon, type IconName } from "../../src/components/Icon";
-import { GlassCard } from "../../src/components/GlassCard";
+import { GlassCard } from "../../src/components/glass";
 import {
   AppBackdrop,
   TOP_BAR_BAR_HEIGHT,
@@ -43,6 +43,7 @@ import { useColors, useTheme } from "../../src/theme/theme-context";
 import { fonts } from "../../src/theme/fonts";
 import { fadeHex } from "../../src/theme/oklch";
 import { useChatSearch } from "../../src/lib/chat-search";
+import { tapLight } from "../../src/lib/haptics";
 import {
   MAIN_TAB_HREFS,
   readMainTabFromPath,
@@ -236,6 +237,7 @@ export default function MainLayout() {
   };
 
   const navigate = (tab: TabId) => {
+    tapLight();
     router.replace(MAIN_TAB_HREFS[tab]);
     closeSidebar();
   };
@@ -467,7 +469,7 @@ export default function MainLayout() {
                         </Pressable>
                       ) : null}
                     </View>
-                    {onComputer && connection ? (
+                    {onChatSurface && connection ? (
                       <View style={styles.topBarBrand} pointerEvents="none">
                         {connection === "connecting" ? (
                           <ActivityIndicator

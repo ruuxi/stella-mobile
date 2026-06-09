@@ -66,8 +66,20 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Stella uses the camera to scan the pairing QR code shown on your computer.",
+          "cameraPermission": "Stella uses the camera to scan the pairing QR code shown on your computer and to snap photos you attach to messages.",
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 5
+          },
+          "androidIntentFilters": ["text/*", "image/*"],
+          "androidMultiIntentFilters": ["image/*"]
         }
       ],
       "expo-font",
@@ -79,7 +91,14 @@
           "bundleIdentifier": "com.stella.mobile.LiveActivities",
           "groupIdentifier": "group.com.stella.mobile.liveactivities",
           "enablePushNotifications": false,
-          "widgets": []
+          "widgets": [
+            {
+              "name": "StellaWidget",
+              "displayName": "Stella",
+              "description": "Ask Stella and see your computer at a glance.",
+              "supportedFamilies": ["systemSmall", "systemMedium"]
+            }
+          ]
         }
       ],
       [

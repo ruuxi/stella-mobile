@@ -8,7 +8,6 @@ import {
   useState,
 } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   Animated,
   Dimensions,
@@ -35,13 +34,13 @@ import {
   type LegendListRenderItemProps,
 } from "@legendapp/list/react-native";
 import { Image } from "expo-image";
-import { GlassView } from "expo-glass-effect";
 import { LinearGradient } from "expo-linear-gradient";
 import MaskedView from "@react-native-masked-view/masked-view";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
+import { GlassSurface } from "./glass";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
@@ -475,7 +474,7 @@ function FadeInMessage({
   );
 }
 
-const copyAssistantMessage = (text: string) => {
+const copyMessageText = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return;
   void Clipboard.setStringAsync(trimmed).then((ok) => {
@@ -483,36 +482,16 @@ const copyAssistantMessage = (text: string) => {
   });
 };
 
-const shareAssistantMessage = (text: string) => {
+const shareMessageText = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return;
   void Share.share({ message: trimmed }).catch(() => {});
 };
 
-const openAssistantActions = (text: string) => {
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  if (Platform.OS === "ios") {
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: ["Copy", "Share\u2026", "Cancel"],
-        cancelButtonIndex: 2,
-      },
-      (index: number) => {
-        if (index === 0) copyAssistantMessage(trimmed);
-        else if (index === 1) shareAssistantMessage(trimmed);
-      },
-    );
-    return;
-  }
-  Alert.alert("Message", undefined, [
-    { text: "Copy", onPress: () => copyAssistantMessage(trimmed) },
-    { text: "Share", onPress: () => shareAssistantMessage(trimmed) },
-    { text: "Cancel", style: "cancel" },
-  ]);
-};
-
 type ChatStyles = ReturnType<typeof makeStyles>;
+
+/** Anchor passed to the message-actions popover (the long-press point). */
+type MessageMenuRequest = { message: ChatMessage; anchor: AnchorRect };
 
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
@@ -520,6 +499,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   colors,
   isStreaming,
   onOpenArtifact,
+  onOpenMessageMenu,
 }: {
   item: ChatMessage;
   styles: ChatStyles;
@@ -527,7 +507,22 @@ const ChatMessageRow = memo(function ChatMessageRow({
   /** True for the trailing assistant message while a reply is mid-stream. */
   isStreaming: boolean;
   onOpenArtifact?: (artifact: ChatArtifact) => void;
+  onOpenMessageMenu: (request: MessageMenuRequest) => void;
 }) {
+  const openMenu = (e: { nativeEvent: { pageX: number; pageY: number } }) => {
+    if (!item.text.trim()) return;
+    tapLight();
+    onOpenMessageMenu({
+      message: item,
+      anchor: {
+        x: e.nativeEvent.pageX,
+        y: e.nativeEvent.pageY,
+        width: 0,
+        height: 0,
+      },
+    });
+  };
+
   if (item.role === "user") {
     const thumbs = item.thumbnailUris ?? [];
     const showThumbs = thumbs.length > 0;
@@ -535,7 +530,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return (
       <View style={styles.userRow}>
         <View style={styles.userColumn}>
-          <View
+          <Pressable
+            onLongPress={openMenu}
+            delayLongPress={350}
+            accessibilityLabel="Long press for message actions"
             style={[styles.userBubble, item.queued && styles.userBubbleQueued]}
           >
             {showThumbs ? (
@@ -563,7 +561,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 {item.text}
               </Text>
             ) : null}
-          </View>
+          </Pressable>
           {item.queued ? (
             <Text
               style={styles.queuedTag}
@@ -580,7 +578,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const hasText = item.text.trim().length > 0;
   return (
     <Pressable
-      onLongPress={() => openAssistantActions(item.text)}
+      onLongPress={openMenu}
       delayLongPress={350}
       accessibilityLabel="Long press for message actions"
       style={styles.assistantRow}
@@ -615,6 +613,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
           maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
         >
           Stopped
+        </Text>
+      ) : null}
+      {item.cloudFallback && !isStreaming ? (
+        <Text
+          style={styles.cloudTag}
+          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+        >
+          Answered while your computer was offline
         </Text>
       ) : null}
     </Pressable>
@@ -704,7 +710,10 @@ function StopButton({
 }) {
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => {
+        tapLight();
+        onPress();
+      }}
       accessibilityLabel="Stop reply"
       style={styles.submitButton}
       hitSlop={4}
@@ -753,14 +762,20 @@ function ScrollToBottomFab({
         pressed && styles.scrollToBottomFabPressed,
       ]}
     >
-      <GlassView style={styles.scrollToBottomFabGlass}>
+      <GlassSurface
+        glass="clear"
+        interactive
+        radius={16}
+        fallbackColor={colors.surface}
+        style={styles.scrollToBottomFabGlass}
+      >
         <Icon
           name="chevron-down"
           size={16}
           color={colors.accent}
           weight="semibold"
         />
-      </GlassView>
+      </GlassSurface>
       {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
     </Pressable>
   );
@@ -949,6 +964,14 @@ function PlusMenuPopover({
             },
           ]}
         >
+          <GlassSurface
+            glass="regular"
+            radius={14}
+            ringed
+            fallbackColor={colors.surface}
+            pointerEvents="none"
+            style={StyleSheet.absoluteFill}
+          />
           {submenuTitle ? (
             <Pressable
               accessibilityLabel="Back to menu"
@@ -1041,10 +1064,7 @@ const makePlusMenuStyles = (colors: Colors) =>
       backgroundColor: "transparent",
     },
     menu: {
-      backgroundColor: colors.surface,
-      borderColor: fadeHex(colors.border, 0.6),
       borderRadius: 14,
-      borderWidth: StyleSheet.hairlineWidth,
       paddingVertical: 6,
       position: "absolute",
       shadowColor: "#000",
@@ -1224,6 +1244,13 @@ export type ChatPaneProps = {
   messages: ChatMessage[];
   /** True while a reply is streaming — controls composer stop button. */
   streaming: boolean;
+  /**
+   * Explicit working-indicator status (e.g. "Waking your computer"). Falls
+   * back to the desktop-parity reasoning copy when unset.
+   */
+  workingStatus?: string;
+  /** Shows a quiet offline notice above the composer. */
+  offline?: boolean;
   /** Empty-state body. Rendered centered when there are no messages. */
   emptyContent: ReactNode;
   /**
@@ -1288,6 +1315,8 @@ export type ChatPaneProps = {
 export function ChatPane({
   messages,
   streaming,
+  workingStatus,
+  offline = false,
   emptyContent,
   historyLoading = false,
   draft,
@@ -1319,7 +1348,7 @@ export function ChatPane({
   // The composer + working indicator overlay the bottom of the chat. We
   // measure their actual height so the list can reserve matching
   // bottom inset, letting messages scroll under the composer (visible
-  // through transparent margins around the GlassView) instead of being
+  // through transparent margins around the glass shell) instead of being
   // clipped by it.
   const [footerHeight, setFooterHeight] = useState(0);
   const listTrailingSlackPx = EDGE_FADE + footerHeight;
@@ -1524,6 +1553,30 @@ export function ChatPane({
       base64: true,
     });
     if (!result.canceled && result.assets.length > 0) {
+      tapLight();
+      const current = attachments ?? [];
+      onChangeAttachments([...current, ...result.assets]);
+    }
+  }, [attachments, enableAttachments, onChangeAttachments]);
+
+  const takePhoto = useCallback(async () => {
+    if (!enableAttachments || !onChangeAttachments) return;
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        "Camera",
+        "Allow Stella to use the camera in Settings so you can snap a photo.",
+        [{ text: "OK" }],
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.75,
+      base64: true,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      tapLight();
       const current = attachments ?? [];
       onChangeAttachments([...current, ...result.assets]);
     }
@@ -1549,6 +1602,12 @@ export function ChatPane({
         icon: "image",
         onSelect: () => void pickImage(),
       });
+      out.push({
+        id: "take-photo",
+        label: "Take a photo",
+        icon: "camera",
+        onSelect: () => void takePhoto(),
+      });
     }
     out.push({
       id: "read-aloud",
@@ -1557,7 +1616,7 @@ export function ChatPane({
       onSelect: () => void readAloud.setEnabled(!readAloud.enabled),
     });
     return out;
-  }, [enableAttachments, pickImage, readAloud]);
+  }, [enableAttachments, pickImage, readAloud, takePhoto]);
 
   // Floating menu (computer chat only): "View computer" + model selection.
   // Surfaced as a floating button above the composer rather than buried in
@@ -1599,6 +1658,7 @@ export function ChatPane({
   const onPressFloating = useCallback(() => {
     const anchor = floatingAnchorRef.current;
     if (!anchor) return;
+    tapLight();
     Keyboard.dismiss();
     anchor.measureInWindow((x, y, width, height) => {
       setFloatingMenuAnchor({ x, y, width, height });
@@ -1650,6 +1710,7 @@ export function ChatPane({
     }
     const anchor = plusAnchorRef.current;
     if (!anchor) return;
+    tapLight();
     Keyboard.dismiss();
     anchor.measureInWindow((x, y, width, height) => {
       setPlusMenuAnchor({ x, y, width, height });
@@ -1657,6 +1718,40 @@ export function ChatPane({
   }, [pickImage, plusMenuOptions]);
 
   const dismissPlusMenu = useCallback(() => setPlusMenuAnchor(null), []);
+
+  // Long-press message actions — a popover anchored at the touch point so it
+  // matches the app's menu language instead of a native sheet takeover.
+  const [messageMenu, setMessageMenu] = useState<MessageMenuRequest | null>(
+    null,
+  );
+  const dismissMessageMenu = useCallback(() => setMessageMenu(null), []);
+  const messageMenuOptions = useMemo<PlusMenuOption[]>(() => {
+    if (!messageMenu) return [];
+    const text = messageMenu.message.text;
+    const out: PlusMenuOption[] = [
+      {
+        id: "copy",
+        label: "Copy",
+        icon: "copy",
+        onSelect: () => copyMessageText(text),
+      },
+      {
+        id: "share",
+        label: "Share\u2026",
+        icon: "share",
+        onSelect: () => shareMessageText(text),
+      },
+    ];
+    if (messageMenu.message.role === "assistant") {
+      out.push({
+        id: "speak",
+        label: "Read aloud",
+        icon: "volume-2",
+        onSelect: () => void speakReply(text),
+      });
+    }
+    return out;
+  }, [messageMenu]);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
   // Stream fade is driven per-row: only the trailing assistant message
@@ -1687,6 +1782,7 @@ export function ChatPane({
             colors={colors}
             isStreaming={isStreamingAssistant}
             onOpenArtifact={onOpenArtifact}
+            onOpenMessageMenu={setMessageMenu}
           />
         </FadeInMessage>
       );
@@ -1907,14 +2003,20 @@ export function ChatPane({
                 pressed && styles.scrollToBottomFabPressed,
               ]}
             >
-              <GlassView style={styles.floatingMenuGlass}>
+              <GlassSurface
+                glass="clear"
+                interactive
+                radius={20}
+                fallbackColor={colors.surface}
+                style={styles.floatingMenuGlass}
+              >
                 <Icon
                   name="more-horizontal"
                   size={20}
                   color={colors.textMuted}
                   weight="semibold"
                 />
-              </GlassView>
+              </GlassSurface>
             </Pressable>
           </Animated.View>
         ) : null}
@@ -1925,6 +2027,13 @@ export function ChatPane({
               { maxHeight: Math.max(160, screenHeight * 0.5) },
             ]}
           >
+            <GlassSurface
+              glass="regular"
+              radius={14}
+              fallbackColor={colors.surface}
+              pointerEvents="none"
+              style={StyleSheet.absoluteFill}
+            />
             {searchResults.length === 0 ? (
               <Text style={styles.searchDropdownEmpty}>
                 No messages match “{searchQuery}”
@@ -1961,7 +2070,18 @@ export function ChatPane({
         onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}
         pointerEvents={searchOpen ? "none" : "box-none"}
       >
-        <WorkingIndicator active={streaming} />
+        <WorkingIndicator active={streaming} status={workingStatus} />
+        {offline ? (
+          <View style={styles.offlineNotice} pointerEvents="none">
+            <Icon name="wifi-off" size={13} color={colors.textMuted} />
+            <Text
+              style={styles.offlineNoticeText}
+              maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+            >
+              You're offline
+            </Text>
+          </View>
+        ) : null}
         <View
           style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}
         >
@@ -1992,11 +2112,11 @@ export function ChatPane({
             </View>
           )}
 
-          <GlassView
-            style={[
-              styles.shell,
-              isExpandedComposed ? styles.shellExpanded : styles.shellPill,
-            ]}
+          <GlassSurface
+            glass="regular"
+            radius={isExpandedComposed ? 20 : 999}
+            fallbackColor={colors.surface}
+            style={styles.shell}
           >
             {dictationInline ? (
               <View style={styles.formPill}>
@@ -2153,7 +2273,7 @@ export function ChatPane({
                 ) : null}
               </View>
             )}
-          </GlassView>
+          </GlassSurface>
         </View>
       </View>
       <PlusMenuPopover
@@ -2168,6 +2288,13 @@ export function ChatPane({
         anchor={floatingMenuAnchor}
         options={floatingMenuOptions}
         onDismiss={dismissFloatingMenu}
+        colors={colors}
+      />
+      <PlusMenuPopover
+        visible={Boolean(messageMenu)}
+        anchor={messageMenu?.anchor ?? null}
+        options={messageMenuOptions}
+        onDismiss={dismissMessageMenu}
         colors={colors}
       />
     </View>
@@ -2280,7 +2407,6 @@ const makeStyles = (colors: Colors) =>
     // floating over the chat (which stays visible). Matches the `+` menu
     // surface so it reads as a menu, not a takeover.
     searchDropdown: {
-      backgroundColor: colors.surface,
       borderColor: fadeHex(colors.border, 0.6),
       borderRadius: 14,
       borderWidth: StyleSheet.hairlineWidth,
@@ -2359,6 +2485,28 @@ const makeStyles = (colors: Colors) =>
       marginTop: 6,
       textTransform: "uppercase",
     },
+    cloudTag: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.regular,
+      fontSize: 12,
+      letterSpacing: -0.1,
+      marginTop: 6,
+      opacity: 0.8,
+    },
+    offlineNotice: {
+      alignItems: "center",
+      alignSelf: "center",
+      flexDirection: "row",
+      gap: 6,
+      paddingBottom: 2,
+      paddingTop: 4,
+    },
+    offlineNoticeText: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.medium,
+      fontSize: 12,
+      letterSpacing: -0.1,
+    },
     userText: {
       color: colors.text,
       fontFamily: fonts.sans.regular,
@@ -2433,8 +2581,6 @@ const makeStyles = (colors: Colors) =>
       shadowRadius: 24,
       elevation: 8,
     },
-    shellPill: { borderRadius: 999 },
-    shellExpanded: { borderRadius: 20 },
 
     formPill: {
       alignItems: "center",

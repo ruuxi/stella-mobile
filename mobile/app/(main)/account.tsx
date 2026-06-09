@@ -5,14 +5,13 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as WebBrowser from "expo-web-browser";
 import { Icon } from "../../src/components/Icon";
+import { GlassToggle } from "../../src/components/glass";
 import { authClient } from "../../src/lib/auth-client";
 import { clearCachedToken } from "../../src/lib/auth-token";
 import { isGuest } from "../../src/lib/guest-mode";
@@ -49,8 +48,6 @@ const GRADIENT_OPTIONS: { value: GradientMode; label: string }[] = [
   { value: "soft", label: "Soft" },
   { value: "flat", label: "Flat" },
 ];
-
-const UPGRADE_URL = "https://stella.sh/pricing";
 
 function maskEmail(email: string): string {
   const at = email.indexOf("@");
@@ -231,15 +228,7 @@ export default function AccountScreen() {
     );
   };
 
-  const openUpgrade = () => {
-    tapLight();
-    void WebBrowser.openBrowserAsync(UPGRADE_URL).catch(() => {
-      void Linking.openURL(UPGRADE_URL);
-    });
-  };
-
   const toggleNotifications = (next: boolean) => {
-    tapLight();
     setMutedLocal(!next);
     void setNotificationsMuted(!next);
   };
@@ -300,27 +289,6 @@ export default function AccountScreen() {
             ) : null}
           </View>
 
-          {/* Stella Pro upgrade card — hidden until mobile billing ships */}
-          {/*
-          <GlassCard radius={14} ringed style={styles.upgradeCardWrap}>
-            <Pressable
-              onPress={openUpgrade}
-              accessibilityLabel="Upgrade your Stella plan"
-              style={({ pressed }) => [
-                styles.upgradeCard,
-                pressed && styles.upgradeCardPressed,
-              ]}
-            >
-              <View style={styles.upgradeCopy}>
-                <Text style={styles.upgradeTitle}>Stella Pro</Text>
-                <Text style={styles.upgradeSub}>
-                  Higher usage, faster replies, voice and image.
-                </Text>
-              </View>
-              <Icon name="arrow-up-right" size={18} color={colors.accent} weight="semibold" />
-            </Pressable>
-          </GlassCard>
-          */}
         </>
       ) : showLoadingHeader ? (
         <Text style={styles.body}>Loading session…</Text>
@@ -459,7 +427,7 @@ export default function AccountScreen() {
             Get notified when your computer finishes a request.
           </Text>
         </View>
-        <Switch
+        <GlassToggle
           value={!notificationsMuted}
           onValueChange={toggleNotifications}
           accessibilityLabel="Toggle push notifications"
@@ -473,7 +441,7 @@ export default function AccountScreen() {
           <Text style={styles.sectionLabel}>Paired computers</Text>
           {pairedDesktops.length === 0 ? (
             <Text style={styles.emptyHint}>
-              No computers paired yet. Pair from the Desktop tab.
+              No computers paired yet. Pair from the Computer tab.
             </Text>
           ) : (
             <View style={styles.pairedList}>
@@ -654,19 +622,6 @@ const makeStyles = (colors: Colors) =>
       justifyContent: "center",
       width: 28,
     },
-    upgradeCardWrap: {
-      marginTop: 16,
-    },
-    upgradeCard: {
-      alignItems: "center",
-      flexDirection: "row",
-      gap: 12,
-      paddingHorizontal: 16,
-      paddingVertical: 14,
-    },
-    upgradeCardPressed: {
-      opacity: 0.85,
-    },
     signInBlock: {
       gap: 6,
       marginTop: 14,
@@ -695,22 +650,6 @@ const makeStyles = (colors: Colors) =>
       fontFamily: fonts.sans.semiBold,
       fontSize: 15,
       letterSpacing: -0.3,
-    },
-    upgradeCopy: {
-      flex: 1,
-      gap: 2,
-    },
-    upgradeTitle: {
-      color: colors.text,
-      fontFamily: fonts.sans.semiBold,
-      fontSize: 16,
-      letterSpacing: -0.3,
-    },
-    upgradeSub: {
-      color: colors.textMuted,
-      fontFamily: fonts.sans.regular,
-      fontSize: 13,
-      lineHeight: 18,
     },
     themeRow: {
       flexDirection: "row",

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Stack, usePathname, useRouter } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -22,13 +22,19 @@ installTextDefaults();
 import { loadGuestMode, isGuest, setGuestMode } from "../src/lib/guest-mode";
 import { loadAiConsent } from "../src/lib/ai-consent";
 import { loadNotificationsMuted } from "../src/lib/notifications-prefs";
+import {
+  hasSeenOnboarding,
+  loadOnboardingSeen,
+} from "../src/lib/onboarding";
 import { loadLastMainTabHref } from "../src/lib/last-main-tab";
 import {
   criticalStellaFontAssets,
   deferredStellaFontAssets,
 } from "../src/theme/fonts";
+import { ShareIntentProvider } from "expo-share-intent";
 import { ThemeProvider } from "../src/theme/theme-context";
 import { ChatSearchProvider } from "../src/lib/chat-search";
+import { ShareIntentHandler } from "../src/lib/share-intent-handler";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -38,6 +44,7 @@ function RootStack() {
       <Stack.Screen name="index" />
       <Stack.Screen name="auth" />
       <Stack.Screen name="(auth)" />
+      <Stack.Screen name="onboarding" />
       <Stack.Screen name="(main)" />
     </Stack>
   );
@@ -55,8 +62,9 @@ function AuthenticatedLayout() {
       loadGuestMode(),
       loadAiConsent(),
       loadNotificationsMuted(),
+      loadOnboardingSeen(),
       loadLastMainTabHref(),
-    ]).then(([, , , href]) => {
+    ]).then(([, , , , href]) => {
       setInitialMainHref(href);
       setGuestReady(true);
     });
@@ -87,19 +95,24 @@ function AuthenticatedLayout() {
       pathname === "/auth" || pathname.startsWith("/auth/");
     const onLogin = pathname === "/login";
     const onIndex = pathname === "/" || pathname === "";
+    const onOnboarding = pathname === "/onboarding";
     const onMain =
       pathname.startsWith("/chat") ||
       pathname.startsWith("/computer") ||
       pathname.startsWith("/stella") ||
       pathname.startsWith("/account");
 
-    if (onAuthCallback) {
+    if (onAuthCallback || onOnboarding) {
       return;
     }
 
     if (session.data) {
       if (isGuest()) void setGuestMode(false);
       void registerForPushNotifications();
+      if (!hasSeenOnboarding()) {
+        router.replace("/onboarding");
+        return;
+      }
       if (onLogin || onIndex) {
         router.replace(initialMainHref);
       }
@@ -108,6 +121,13 @@ function AuthenticatedLayout() {
 
     if (isGuest()) {
       // Guests may open /login from Sign in buttons — don't bounce them back to chat.
+      if (onLogin) {
+        return;
+      }
+      if (!hasSeenOnboarding()) {
+        router.replace("/onboarding");
+        return;
+      }
       if (onIndex) {
         router.replace(initialMainHref);
       }
@@ -119,7 +139,12 @@ function AuthenticatedLayout() {
     }
   }, [pathname, router, session.data, session.isPending, guestReady, initialMainHref]);
 
-  return <RootStack />;
+  return (
+    <>
+      <ShareIntentHandler />
+      <RootStack />
+    </>
+  );
 }
 
 function AppLayout() {
@@ -149,6 +174,18 @@ function ConvexBoundLayout() {
   );
 }
 
+/**
+ * Mounted inside `ThemeProvider`, which holds rendering until the stored
+ * theme has loaded — so the splash only lifts once the first frame is
+ * painted in the user's actual theme (no Pearl flash on cold start).
+ */
+function HideSplashWhenThemed() {
+  useEffect(() => {
+    void SplashScreen.hideAsync();
+  }, []);
+  return null;
+}
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts(criticalStellaFontAssets);
 
@@ -160,25 +197,22 @@ export default function RootLayout() {
     void loadAsync(deferredStellaFontAssets).catch(() => undefined);
   }, [fontsLoaded]);
 
-  const onLayoutRootView = useCallback(() => {
-    if (fontsLoaded) {
-      void SplashScreen.hideAsync();
-    }
-  }, [fontsLoaded]);
-
   if (!fontsLoaded) {
     return null;
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider onLayout={onLayoutRootView}>
-        <ThemeProvider>
-          <ChatSearchProvider>
-            <AppLayout />
-          </ChatSearchProvider>
-        </ThemeProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <ShareIntentProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <ThemeProvider>
+            <HideSplashWhenThemed />
+            <ChatSearchProvider>
+              <AppLayout />
+            </ChatSearchProvider>
+          </ThemeProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </ShareIntentProvider>
   );
 }

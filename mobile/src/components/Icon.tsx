@@ -37,7 +37,12 @@ export type IconName =
   | "user"
   | "stop"
   | "eye"
-  | "eye-off";
+  | "eye-off"
+  | "copy"
+  | "share"
+  | "wifi-off"
+  | "camera"
+  | "smartphone";
 
 const FEATHER_NAMES: Record<
   IconName,
@@ -73,6 +78,11 @@ const FEATHER_NAMES: Record<
   stop: "square",
   eye: "eye",
   "eye-off": "eye-off",
+  copy: "copy",
+  share: "share",
+  "wifi-off": "wifi-off",
+  camera: "camera",
+  smartphone: "smartphone",
 };
 
 const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
@@ -106,6 +116,11 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   stop: "stop.fill",
   eye: "eye",
   "eye-off": "eye.slash",
+  copy: "doc.on.doc",
+  share: "square.and.arrow.up",
+  "wifi-off": "wifi.slash",
+  camera: "camera",
+  smartphone: "iphone",
 };
 
 type IconProps = {

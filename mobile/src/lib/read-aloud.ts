@@ -151,10 +151,10 @@ export async function speakReply(text: string) {
 
   try {
     const { audio, contentType } = await fetchInworldReadAloudAudio(spoken);
-    if (generation !== playbackGeneration || !cachedReadAloudEnabled) return;
+    if (generation !== playbackGeneration) return;
 
     const file = createAudioFile(audio, contentType);
-    if (generation !== playbackGeneration || !cachedReadAloudEnabled) {
+    if (generation !== playbackGeneration) {
       try {
         file.delete();
       } catch {

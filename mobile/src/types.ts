@@ -93,6 +93,12 @@ export type ChatMessage = {
    * Renders with a trailing "Stopped" affordance.
    */
   stopped?: boolean;
+  /**
+   * Assistant message: the paired desktop was unreachable, so this reply was
+   * answered by the fallback responder instead. Renders a small "Answered
+   * while your computer was offline" caption.
+   */
+  cloudFallback?: boolean;
 };
 
 export type DesktopBridgeStatus = {

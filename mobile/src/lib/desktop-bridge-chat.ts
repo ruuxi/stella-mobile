@@ -59,11 +59,22 @@ export type DesktopBridgeConnection = {
   includeDeveloperArtifacts: boolean;
 };
 
+/** Coarse send progress surfaced in the working indicator. */
+export type DesktopBridgeSendStatus = "connecting" | "waking" | "running";
+
+export type DesktopBridgeAttachment = {
+  /** Data URL (`data:image/jpeg;base64,…`) — same shape the desktop composer sends. */
+  url: string;
+  mimeType?: string;
+};
+
 type DesktopBridgeChatArgs = {
   access: StoredPhoneAccess;
   message: string;
   model?: string | null;
+  attachments?: DesktopBridgeAttachment[];
   signal?: AbortSignal;
+  onStatus?: (status: DesktopBridgeSendStatus) => void;
   onTextDelta?: (delta: string) => void;
   onArtifacts?: (artifacts: ChatArtifact[]) => void;
 };
@@ -111,6 +122,16 @@ class BridgeAbortError extends Error {
   constructor() {
     super("aborted");
     this.name = "AbortError";
+  }
+}
+
+/** The paired desktop never came online — wake attempts all missed. */
+export class DesktopOfflineError extends Error {
+  constructor() {
+    super(
+      "Your desktop is offline right now. Open Stella on your desktop and try again.",
+    );
+    this.name = "DesktopOfflineError";
   }
 }
 
@@ -309,7 +330,9 @@ const filterDesktopBridgeArtifacts = (
 
 export async function resolveDesktopBridge(
   access: StoredPhoneAccess,
+  onStatus?: (status: DesktopBridgeSendStatus) => void,
 ): Promise<DesktopBridgeConnection> {
+  onStatus?.("connecting");
   await requestDesktopConnection(access);
 
   let baseUrl = "";
@@ -326,6 +349,9 @@ export async function resolveDesktopBridge(
       }
     }
     if (attempt < DESKTOP_WAKE_ATTEMPTS - 1) {
+      // First probe missed — the desktop is likely asleep and being woken by
+      // the connection request above. Tell the UI we're waking it.
+      onStatus?.("waking");
       await sleep(DESKTOP_WAKE_RETRY_MS);
     }
   }
@@ -338,10 +364,9 @@ export async function resolveDesktopBridge(
   }
 
   if (!baseUrl) {
-    throw new Error(
-      "Your desktop is offline right now. Open Stella on your desktop and try again.",
-    );
+    throw new DesktopOfflineError();
   }
+  onStatus?.("connecting");
 
   const bridgeSession = await createDesktopBridgeSession(access, baseUrl);
   return {
@@ -769,31 +794,34 @@ export async function sendDesktopBridgeChat({
   access,
   message,
   model,
+  attachments,
   signal,
+  onStatus,
   onTextDelta,
   onArtifacts,
 }: DesktopBridgeChatArgs): Promise<DesktopBridgeChatResult> {
   const text = message.trim();
-  if (!text) {
+  if (!text && !attachments?.length) {
     throw new Error("Message is required.");
   }
   if (signal?.aborted) {
     throw new BridgeAbortError();
   }
 
-  let activeBridge = await resolveDesktopBridge(access);
+  let activeBridge = await resolveDesktopBridge(access, onStatus);
   const conversationId = await getDesktopBridgeConversationId(activeBridge);
   // Stable idempotency key: the desktop dedupes retries of this exact send, so
   // reconnecting and re-issuing startChat can never spawn a duplicate run.
   const clientRequestId = createClientRequestId(conversationId);
   const startChatArgs = {
     conversationId,
-    userPrompt: text,
+    userPrompt: text || "See the attached image.",
     deviceId: access.mobileDeviceId,
     platform: "mobile",
     mode: "computer",
     storageMode: "local",
     clientRequestId,
+    ...(attachments?.length ? { attachments } : {}),
     messageMetadata: {
       source: "stella_mobile",
       ...(model?.trim() ? { mobileModelPreference: model.trim() } : {}),
@@ -1043,6 +1071,7 @@ export async function sendDesktopBridgeChat({
               requestId = requestId || startedRequestId;
               startIssued = true;
             }
+            onStatus?.("running");
           }
 
           let activeRunId = "";

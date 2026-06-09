@@ -20,7 +20,7 @@ import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
 import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
-import { GlassCard } from "./GlassCard";
+import { GlassCard } from "./glass";
 import { PairingQrScanner } from "./PairingQrScanner";
 
 const PAIRING_CODE_LENGTH = 8;
