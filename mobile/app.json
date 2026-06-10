@@ -18,6 +18,12 @@
       "buildNumber": "52",
       "supportsTablet": true,
       "usesAppleSignIn": true,
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.stella.mobile",
+          "group.com.stella.mobile.liveactivities"
+        ]
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSupportsLiveActivities": true
