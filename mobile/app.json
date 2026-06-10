@@ -94,7 +94,7 @@
         "expo-widgets",
         {
           "bundleIdentifier": "com.stella.mobile.LiveActivities",
-          "groupIdentifier": "group.com.stella.mobile.liveactivities",
+          "groupIdentifier": "group.com.stella.mobile",
           "enablePushNotifications": false,
           "widgets": [
             {
