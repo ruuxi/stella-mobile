@@ -185,7 +185,7 @@ export function PairPhoneSheet({
 
             <View style={styles.manualCodeBlock}>
               <Text style={styles.manualCodeLabel}>or enter code manually</Text>
-              <GlassCard radius={14} ringed>
+              <GlassCard radius={14} ringed legible>
                 <TextInput
                   autoCapitalize="characters"
                   autoCorrect={false}

@@ -11,6 +11,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import {
+  GlassContainer,
   GlassView,
   isLiquidGlassAvailable,
   type GlassStyle,
@@ -48,6 +49,19 @@ type GlassSurfaceProps = ViewProps & {
   glass?: GlassStyle;
   /** Translucent tint layered over the glass (and the fallback). */
   tintColor?: string;
+  /**
+   * Surfaces with text over busy content (menus, popovers, the composer).
+   * Layers a strong theme-surface tint over the *glass itself* — not just the
+   * fallback — so labels stay readable on iOS 26+, and defaults the fallback
+   * to the opaque surface color.
+   */
+  legible?: boolean;
+  /**
+   * Drives the native Liquid Glass materialize/dissolve animation. While
+   * `false` the glass renders as `none`; flipping to `true` animates the
+   * material in (and vice versa). Defaults to `true` (always present).
+   */
+  present?: boolean;
   /** Whether the glass reacts to touches with the native interactive sheen. */
   interactive?: boolean;
   /** Corner radius applied to both the glass surface and the fallback. */
@@ -71,6 +85,8 @@ type GlassSurfaceProps = ViewProps & {
 export function GlassSurface({
   glass = "regular",
   tintColor,
+  legible = false,
+  present = true,
   interactive = false,
   radius = 16,
   ringed = false,
@@ -87,13 +103,19 @@ export function GlassSurface({
     ? { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border }
     : null;
 
+  // Apple's `regular` glass is far too transparent for text-bearing popovers
+  // over busy content; a strong surface tint keeps the refraction while
+  // restoring contrast.
+  const resolvedTint =
+    tintColor ?? (legible ? fadeHex(colors.surface, 0.78) : undefined);
+
   if (liquidGlassSupported) {
     return (
       <GlassView
-        glassEffectStyle={glass}
+        glassEffectStyle={{ style: present ? glass : "none", animate: true }}
         isInteractive={interactive}
         colorScheme={scheme}
-        tintColor={tintColor}
+        tintColor={resolvedTint}
         style={[{ borderRadius: radius, overflow: "hidden" }, ring, style]}
         {...rest}
       >
@@ -105,7 +127,11 @@ export function GlassSurface({
   const fallback: ViewStyle = {
     backgroundColor:
       fallbackColor ??
-      (isDark ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.72)"),
+      (legible
+        ? colors.surface
+        : isDark
+          ? "rgba(255,255,255,0.06)"
+          : "rgba(255,255,255,0.72)"),
     borderRadius: radius,
     overflow: "hidden",
   };
@@ -123,10 +149,32 @@ export function GlassSurface({
   );
 }
 
+type GlassGroupProps = ViewProps & {
+  /**
+   * Distance (pt) at which sibling glass surfaces start flowing into each
+   * other — the signature Liquid Glass merge animation.
+   */
+  spacing?: number;
+};
+
+/**
+ * Groups nearby glass surfaces so they merge fluidly as they approach each
+ * other (Apple's `UIGlassContainerEffect`). Renders a plain `<View>` when
+ * Liquid Glass is unavailable. Purely visual — layout is unchanged.
+ */
+export function GlassGroup({ spacing = 24, ...rest }: GlassGroupProps) {
+  if (liquidGlassSupported) {
+    return <GlassContainer spacing={spacing} {...rest} />;
+  }
+  return <View {...rest} />;
+}
+
 type GlassCardProps = ViewProps & {
   intensity?: GlassStyle;
   ringed?: boolean;
   radius?: number;
+  /** See {@link GlassSurface}: strong surface tint for text-bearing glass. */
+  legible?: boolean;
 };
 
 /**
@@ -266,6 +314,7 @@ export function GlassToggle({
     >
       <GlassSurface
         glass="clear"
+        interactive
         radius={TOGGLE_HEIGHT / 2}
         fallbackColor={offTrack}
         style={StyleSheet.absoluteFill}

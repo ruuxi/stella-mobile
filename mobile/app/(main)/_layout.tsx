@@ -109,6 +109,7 @@ function Sidebar({
   return (
     <GlassCard
       radius={0}
+      legible
       style={[styles.sidebar, { paddingTop: insets.top + 12, paddingBottom: insets.bottom }]}
     >
       <StellaBrandMark />

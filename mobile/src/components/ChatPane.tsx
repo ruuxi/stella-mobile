@@ -14,7 +14,6 @@ import {
   Keyboard,
   LayoutChangeEvent,
   LayoutAnimation,
-  Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
@@ -40,7 +39,7 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
-import { GlassSurface } from "./glass";
+import { GlassGroup, GlassSurface } from "./glass";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
@@ -745,39 +744,68 @@ function ScrollToBottomFab({
   /** Distance in pt from the bottom of the viewport — sit just above the composer. */
   bottomOffset?: number;
 }) {
-  if (!visible) return null;
+  // Stays mounted across visibility changes so the glass can run its native
+  // materialize/dissolve transition; the JS anim fades the icon along with it.
+  const anim = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: visible ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [anim, visible]);
+
   return (
-    <Pressable
-      accessibilityLabel={
-        hasUnread
-          ? "Scroll to latest messages, new replies below"
-          : "Scroll to latest messages"
-      }
-      accessibilityRole="button"
-      hitSlop={6}
-      onPress={onPress}
-      style={({ pressed }) => [
+    <Animated.View
+      pointerEvents={visible ? "box-none" : "none"}
+      style={[
         styles.scrollToBottomFab,
         bottomOffset !== undefined && { bottom: bottomOffset },
-        pressed && styles.scrollToBottomFabPressed,
+        {
+          opacity: anim,
+          transform: [
+            {
+              translateY: anim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [8, 0],
+              }),
+            },
+          ],
+        },
       ]}
     >
-      <GlassSurface
-        glass="clear"
-        interactive
-        radius={16}
-        fallbackColor={colors.surface}
-        style={styles.scrollToBottomFabGlass}
+      <Pressable
+        accessibilityLabel={
+          hasUnread
+            ? "Scroll to latest messages, new replies below"
+            : "Scroll to latest messages"
+        }
+        accessibilityRole="button"
+        hitSlop={6}
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.scrollToBottomFabInner,
+          pressed && styles.scrollToBottomFabPressed,
+        ]}
       >
-        <Icon
-          name="chevron-down"
-          size={16}
-          color={colors.accent}
-          weight="semibold"
-        />
-      </GlassSurface>
-      {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
-    </Pressable>
+        <GlassSurface
+          glass="clear"
+          interactive
+          present={visible}
+          radius={16}
+          fallbackColor={colors.surface}
+          style={styles.scrollToBottomFabGlass}
+        >
+          <Icon
+            name="chevron-down"
+            size={16}
+            color={colors.accent}
+            weight="semibold"
+          />
+        </GlassSurface>
+        {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
+      </Pressable>
+    </Animated.View>
   );
 }
 
@@ -823,18 +851,31 @@ function PlusMenuPopover({
   options,
   onDismiss,
   colors,
+  containerRef,
 }: {
   visible: boolean;
   anchor: AnchorRect | null;
   options: PlusMenuOption[];
   onDismiss: () => void;
   colors: Colors;
+  /**
+   * The chat root the menu overlays. Anchors are captured in window space; we
+   * render *in-tree* (not in a `Modal`) so Liquid Glass can actually sample the
+   * chat behind the menu — a `Modal` is a separate window with nothing to
+   * refract, which leaves the glass clear and its materialize animation inert.
+   * We translate window anchors into this container's local space.
+   */
+  containerRef: React.RefObject<View | null>;
 }) {
   const styles = useMemo(() => makePlusMenuStyles(colors), [colors]);
   const [menuLayout, setMenuLayout] = useState<{
     width: number;
     height: number;
   } | null>(null);
+  const [origin, setOrigin] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
   const [submenuStack, setSubmenuStack] = useState<PlusMenuLevel[]>([]);
   // Snappy entrance: the menu springs up from the anchor once it has been
   // measured, instead of the slow flat fade of the RN Modal.
@@ -845,8 +886,12 @@ function PlusMenuPopover({
       setMenuLayout(null);
       setSubmenuStack([]);
       anim.setValue(0);
+      return;
     }
-  }, [visible, anim]);
+    // Snapshot the container's window offset so window-space anchors land in
+    // the right spot once we re-base them into local coordinates.
+    containerRef.current?.measureInWindow((x, y) => setOrigin({ x, y }));
+  }, [visible, anim, containerRef]);
 
   useEffect(() => {
     if (visible && menuLayout) {
@@ -907,17 +952,22 @@ function PlusMenuPopover({
   const measured = menuLayout;
   const desiredWidth = Math.max(PLUS_MENU_MIN_WIDTH, measured?.width ?? 0);
   // Left-align with the anchor, clamped inside the screen so the bubble
-  // never spills past the edge of the device.
-  const left = Math.min(
+  // never spills past the edge of the device. Computed in window space, then
+  // re-based into the container's local space (we render in-tree, not modal).
+  const windowLeft = Math.min(
     Math.max(PLUS_MENU_EDGE_PADDING, anchor.x),
     screen.width - desiredWidth - PLUS_MENU_EDGE_PADDING,
   );
+  const left = windowLeft - origin.x;
   // Drop-up by default; fall back to drop-down if the menu wouldn't fit
   // above the anchor.
   const menuHeight = measured?.height ?? 0;
   const dropUpTop = anchor.y - menuHeight - PLUS_MENU_GAP;
   const isDropDown = Boolean(measured) && dropUpTop < PLUS_MENU_EDGE_PADDING;
-  const top = isDropDown ? anchor.y + anchor.height + PLUS_MENU_GAP : dropUpTop;
+  const windowTop = isDropDown
+    ? anchor.y + anchor.height + PLUS_MENU_GAP
+    : dropUpTop;
+  const top = windowTop - origin.y;
   // Emerge from the anchor: a drop-up menu rises into place, a drop-down
   // menu settles down into place.
   const enterTranslateY = anim.interpolate({
@@ -930,45 +980,34 @@ function PlusMenuPopover({
   });
 
   return (
-    <Modal
-      transparent
-      visible={visible}
-      animationType="none"
-      onRequestClose={handleRequestClose}
-      statusBarTranslucent
-    >
+    <View style={styles.overlay} pointerEvents="box-none">
       <Pressable
-        style={styles.backdrop}
+        style={StyleSheet.absoluteFill}
         onPress={handleRequestClose}
         accessibilityLabel="Dismiss menu"
+      />
+      <Animated.View
+        onLayout={(event) => {
+          const { width, height } = event.nativeEvent.layout;
+          setMenuLayout({ width, height });
+        }}
+        style={[
+          styles.menu,
+          {
+            left,
+            minWidth: PLUS_MENU_MIN_WIDTH,
+            opacity: measured ? anim : 0,
+            top: measured ? top : anchor.y - PLUS_MENU_GAP - origin.y,
+            transform: [{ translateY: enterTranslateY }, { scale: enterScale }],
+          },
+        ]}
       >
-        <Animated.View
-          // Stop the backdrop's onPress from firing when the user taps
-          // inside the menu itself.
-          onStartShouldSetResponder={() => true}
-          onLayout={(event) => {
-            const { width, height } = event.nativeEvent.layout;
-            setMenuLayout({ width, height });
-          }}
-          style={[
-            styles.menu,
-            {
-              left,
-              minWidth: PLUS_MENU_MIN_WIDTH,
-              opacity: measured ? anim : 0,
-              top: measured ? top : anchor.y - PLUS_MENU_GAP,
-              transform: [
-                { translateY: enterTranslateY },
-                { scale: enterScale },
-              ],
-            },
-          ]}
-        >
           <GlassSurface
             glass="regular"
+            legible
+            present={Boolean(measured)}
             radius={14}
             ringed
-            fallbackColor={colors.surface}
             pointerEvents="none"
             style={StyleSheet.absoluteFill}
           />
@@ -1049,19 +1088,19 @@ function PlusMenuPopover({
               </Pressable>
             );
           })}
-        </Animated.View>
-      </Pressable>
-    </Modal>
+      </Animated.View>
+    </View>
   );
 }
 
 const makePlusMenuStyles = (colors: Colors) =>
   StyleSheet.create({
-    backdrop: {
-      flex: 1,
-      // No visible scrim — the menu is a lightweight popover, not a
-      // modal dialog. The Pressable still catches outside taps.
-      backgroundColor: "transparent",
+    overlay: {
+      // In-tree overlay covering the chat root (no Modal), so Liquid Glass can
+      // sample the content behind the menu. `box-none` lets taps fall through
+      // to the backdrop / menu children only.
+      ...StyleSheet.absoluteFillObject,
+      zIndex: 50,
     },
     menu: {
       borderRadius: 14,
@@ -1590,6 +1629,8 @@ export function ChatPane({
     [attachments, onChangeAttachments],
   );
 
+  // Root the in-tree menu overlays measure against (see PlusMenuPopover).
+  const rootRef = useRef<View>(null);
   const plusAnchorRef = useRef<View>(null);
   const [plusMenuAnchor, setPlusMenuAnchor] = useState<AnchorRect | null>(null);
 
@@ -1883,7 +1924,7 @@ export function ChatPane({
   );
 
   return (
-    <View style={styles.screen}>
+    <View ref={rootRef} collapsable={false} style={styles.screen}>
       <View style={styles.viewport}>
         {historyLoading ? (
           // Hold a stable blank surface while history hydrates so the empty
@@ -1962,6 +2003,14 @@ export function ChatPane({
                 <AppBackdrop />
               </View>
             </MaskedView>
+          </>
+        )}
+        {/* Floating glass controls share one GlassGroup so the FAB and the
+            computer-options button flow into each other when they get close —
+            the native Liquid Glass merge. Layout is untouched: the group is a
+            pass-through absolute overlay. */}
+        <GlassGroup pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+          {!historyLoading && !empty ? (
             <ScrollToBottomFab
               visible={scroll.awayFromBottom}
               hasUnread={unread}
@@ -1970,56 +2019,57 @@ export function ChatPane({
               colors={colors}
               bottomOffset={footerHeight - 24}
             />
-          </>
-        )}
-        {hasFloatingMenu && !searchOpen ? (
-          <Animated.View
-            ref={floatingAnchorRef}
-            collapsable={false}
-            pointerEvents={floatingHidden ? "none" : "auto"}
-            style={[
-              styles.floatingMenuButton,
-              {
-                bottom: footerHeight - 20,
-                opacity: floatingAnim,
-                transform: [
-                  {
-                    translateY: floatingAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [12, 0],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <Pressable
-              accessibilityLabel="Computer options"
-              accessibilityRole="button"
-              hitSlop={6}
-              onPress={onPressFloating}
-              style={({ pressed }) => [
-                styles.floatingMenuPressable,
-                pressed && styles.scrollToBottomFabPressed,
+          ) : null}
+          {hasFloatingMenu && !searchOpen ? (
+            <Animated.View
+              ref={floatingAnchorRef}
+              collapsable={false}
+              pointerEvents={floatingHidden ? "none" : "auto"}
+              style={[
+                styles.floatingMenuButton,
+                {
+                  bottom: footerHeight - 20,
+                  opacity: floatingAnim,
+                  transform: [
+                    {
+                      translateY: floatingAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [12, 0],
+                      }),
+                    },
+                  ],
+                },
               ]}
             >
-              <GlassSurface
-                glass="clear"
-                interactive
-                radius={20}
-                fallbackColor={colors.surface}
-                style={styles.floatingMenuGlass}
+              <Pressable
+                accessibilityLabel="Computer options"
+                accessibilityRole="button"
+                hitSlop={6}
+                onPress={onPressFloating}
+                style={({ pressed }) => [
+                  styles.floatingMenuPressable,
+                  pressed && styles.scrollToBottomFabPressed,
+                ]}
               >
-                <Icon
-                  name="more-horizontal"
-                  size={20}
-                  color={colors.textMuted}
-                  weight="semibold"
-                />
-              </GlassSurface>
-            </Pressable>
-          </Animated.View>
-        ) : null}
+                <GlassSurface
+                  glass="clear"
+                  interactive
+                  present={!floatingHidden}
+                  radius={20}
+                  fallbackColor={colors.surface}
+                  style={styles.floatingMenuGlass}
+                >
+                  <Icon
+                    name="more-horizontal"
+                    size={20}
+                    color={colors.textMuted}
+                    weight="semibold"
+                  />
+                </GlassSurface>
+              </Pressable>
+            </Animated.View>
+          ) : null}
+        </GlassGroup>
         {searchOpen && searchActive ? (
           <View
             style={[
@@ -2029,8 +2079,8 @@ export function ChatPane({
           >
             <GlassSurface
               glass="regular"
+              legible
               radius={14}
-              fallbackColor={colors.surface}
               pointerEvents="none"
               style={StyleSheet.absoluteFill}
             />
@@ -2114,6 +2164,9 @@ export function ChatPane({
 
           <GlassSurface
             glass="regular"
+            // Softer than the menu tint: enough contrast for the input text
+            // while keeping the composer visibly glassy over scrolling chat.
+            tintColor={fadeHex(colors.surface, 0.5)}
             radius={isExpandedComposed ? 20 : 999}
             fallbackColor={colors.surface}
             style={styles.shell}
@@ -2282,6 +2335,7 @@ export function ChatPane({
         options={plusMenuOptions}
         onDismiss={dismissPlusMenu}
         colors={colors}
+        containerRef={rootRef}
       />
       <PlusMenuPopover
         visible={Boolean(floatingMenuAnchor) && hasFloatingMenu}
@@ -2289,6 +2343,7 @@ export function ChatPane({
         options={floatingMenuOptions}
         onDismiss={dismissFloatingMenu}
         colors={colors}
+        containerRef={rootRef}
       />
       <PlusMenuPopover
         visible={Boolean(messageMenu)}
@@ -2296,6 +2351,7 @@ export function ChatPane({
         options={messageMenuOptions}
         onDismiss={dismissMessageMenu}
         colors={colors}
+        containerRef={rootRef}
       />
     </View>
   );
@@ -2346,6 +2402,7 @@ const makeStyles = (colors: Colors) =>
       elevation: 2,
       width: 32,
     },
+    scrollToBottomFabInner: { flex: 1 },
     scrollToBottomFabGlass: {
       alignItems: "center",
       borderColor: fadeHex(colors.border, 0.6),
