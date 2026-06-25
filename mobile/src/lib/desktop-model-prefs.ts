@@ -109,11 +109,15 @@ const CONVERSATION_AGENT_KEYS: ReadonlySet<string> = new Set([
 // assistant agents rather than silently doing nothing.
 const FALLBACK_AGENT_KEYS = ["orchestrator", "general"];
 
+// When the catalog can't be fetched, the only thing we can safely offer is
+// the opaque default — the concrete pinnable models are tier-dependent and
+// only known from the live catalog.
 const FALLBACK_STELLA_MODELS: StellaCatalogModel[] = [
-  { id: STELLA_DEFAULT_MODEL, name: "Stella Recommended", allowedForAudience: true },
-  { id: "stella/light", name: "Stella Light", allowedForAudience: true },
-  { id: "stella/standard", name: "Stella Standard", allowedForAudience: false },
-  { id: "stella/priority", name: "Stella Priority", allowedForAudience: false },
+  {
+    id: STELLA_DEFAULT_MODEL,
+    name: "Stella Recommended",
+    allowedForAudience: true,
+  },
 ];
 
 /* ── catalog fetch (HTTP, no bridge) ──────────────────────────── */
