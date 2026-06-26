@@ -39,7 +39,7 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
-import { GlassSurface } from "./glass";
+import { GlassSurface, liquidGlassSupported } from "./glass";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
@@ -762,7 +762,10 @@ function ScrollToBottomFab({
         styles.scrollToBottomFab,
         bottomOffset !== undefined && { bottom: bottomOffset },
         {
-          opacity: anim,
+          // Opacity on a Liquid Glass ancestor makes iOS drop the glass
+          // material, so only fade the wrapper on the (non-glass) fallback. On
+          // glass the material fades via `present` and the icon fades below.
+          opacity: liquidGlassSupported ? 1 : anim,
           transform: [
             {
               translateY: anim.interpolate({
@@ -796,14 +799,19 @@ function ScrollToBottomFab({
           fallbackColor={colors.surface}
           style={styles.scrollToBottomFabGlass}
         >
-          <Icon
-            name="chevron-down"
-            size={16}
-            color={colors.accent}
-            weight="semibold"
-          />
+          {/* Icon is a child of the glass, so fading it is safe. */}
+          <Animated.View style={{ opacity: anim }}>
+            <Icon
+              name="chevron-down"
+              size={16}
+              color={colors.accent}
+              weight="semibold"
+            />
+          </Animated.View>
         </GlassSurface>
-        {hasUnread ? <View style={styles.scrollToBottomDot} /> : null}
+        {hasUnread ? (
+          <Animated.View style={[styles.scrollToBottomDot, { opacity: anim }]} />
+        ) : null}
       </Pressable>
     </Animated.View>
   );
@@ -996,7 +1004,6 @@ function PlusMenuPopover({
           {
             left,
             minWidth: PLUS_MENU_MIN_WIDTH,
-            opacity: measured ? anim : 0,
             top: measured ? top : anchor.y - PLUS_MENU_GAP - origin.y,
             transform: [{ translateY: enterTranslateY }, { scale: enterScale }],
           },
@@ -1011,6 +1018,12 @@ function PlusMenuPopover({
             pointerEvents="none"
             style={StyleSheet.absoluteFill}
           />
+          {/* Fade the menu *contents* — never the glass or its parent. Animating
+              opacity on a GlassView ancestor makes iOS drop the Liquid Glass
+              material entirely (renders clear). The glass itself fades via its
+              own `present`-driven materialize animation; the spring lives on the
+              transform above. */}
+          <Animated.View style={{ opacity: measured ? anim : 0 }}>
           {submenuTitle ? (
             <Pressable
               accessibilityLabel="Back to menu"
@@ -1088,6 +1101,7 @@ function PlusMenuPopover({
               </Pressable>
             );
           })}
+          </Animated.View>
       </Animated.View>
     </View>
   );
@@ -2034,7 +2048,10 @@ export function ChatPane({
                 styles.floatingMenuButton,
                 {
                   bottom: footerHeight - 20,
-                  opacity: floatingAnim,
+                  // See ScrollToBottomFab: never fade a Liquid Glass ancestor's
+                  // opacity (it drops the material). Fade only on the fallback;
+                  // on glass the material fades via `present` and the icon below.
+                  opacity: liquidGlassSupported ? 1 : floatingAnim,
                   transform: [
                     {
                       translateY: floatingAnim.interpolate({
@@ -2064,12 +2081,14 @@ export function ChatPane({
                   fallbackColor={colors.surface}
                   style={styles.floatingMenuGlass}
                 >
-                  <Icon
-                    name="more-horizontal"
-                    size={20}
-                    color={colors.textMuted}
-                    weight="semibold"
-                  />
+                  <Animated.View style={{ opacity: floatingAnim }}>
+                    <Icon
+                      name="more-horizontal"
+                      size={20}
+                      color={colors.textMuted}
+                      weight="semibold"
+                    />
+                  </Animated.View>
                 </GlassSurface>
               </Pressable>
             </Animated.View>
