@@ -26,7 +26,10 @@ function mapMessage(raw: string): string {
   if (
     lower.includes("unauthorized")
     || lower.includes("401")
-    || lower.includes("session")
+    || (lower.includes("session")
+      && (lower.includes("expired")
+        || lower.includes("revoked")
+        || lower.includes("sign in")))
   ) {
     return "Your session expired. Sign in again.";
   }

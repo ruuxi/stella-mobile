@@ -14,6 +14,7 @@ import { Icon } from "../../src/components/Icon";
 import { GlassToggle } from "../../src/components/glass";
 import { authClient } from "../../src/lib/auth-client";
 import { clearCachedToken } from "../../src/lib/auth-token";
+import { clearCachedDesktopBridge } from "../../src/lib/desktop-bridge-chat";
 import { isGuest } from "../../src/lib/guest-mode";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { tapLight } from "../../src/lib/haptics";
@@ -164,6 +165,7 @@ export default function AccountScreen() {
       await unregisterForPushNotifications();
       await authClient.signOut();
       clearCachedToken();
+      clearCachedDesktopBridge();
     } finally {
       setIsSigningOut(false);
     }
@@ -181,6 +183,7 @@ export default function AccountScreen() {
       await unregisterForPushNotifications();
       await client.deleteUser({});
       clearCachedToken();
+      clearCachedDesktopBridge();
       await authClient.signOut();
     } catch (e) {
       Alert.alert("Could not delete account", userFacingError(e));
@@ -219,6 +222,7 @@ export default function AccountScreen() {
           style: "destructive",
           onPress: () => {
             setRemovingDesktopId(access.desktopDeviceId);
+            clearCachedDesktopBridge(access.desktopDeviceId);
             void clearStoredPhoneAccess(access.desktopDeviceId)
               .then(() => refreshPaired())
               .finally(() => setRemovingDesktopId(null));

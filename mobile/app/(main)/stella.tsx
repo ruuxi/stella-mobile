@@ -14,7 +14,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "../../src/components/Icon";
 import { assert, assertObject } from "../../src/lib/assert";
 import { isGuest } from "../../src/lib/guest-mode";
-import { createDesktopBridgeSession } from "../../src/lib/desktop-bridge-chat";
+import {
+  clearCachedDesktopBridge,
+  createDesktopBridgeSession,
+} from "../../src/lib/desktop-bridge-chat";
 import {
   clearStoredPhoneAccess,
   completePhonePairing,
@@ -329,6 +332,7 @@ function AuthenticatedStellaScreen() {
       } catch (error) {
         const message = userFacingError(error);
         if (message.toLowerCase().includes("pair")) {
+          clearCachedDesktopBridge(access.desktopDeviceId);
           await clearStoredPhoneAccess(access.desktopDeviceId);
           updatePreferredAccess(null);
           setScreenState(

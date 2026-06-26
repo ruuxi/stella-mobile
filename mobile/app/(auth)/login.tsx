@@ -21,6 +21,7 @@ import { useRouter } from "expo-router";
 import Svg, { Path } from "react-native-svg";
 import { authClient } from "../../src/lib/auth-client";
 import { clearCachedToken } from "../../src/lib/auth-token";
+import { clearCachedDesktopBridge } from "../../src/lib/desktop-bridge-chat";
 import { env } from "../../src/config/env";
 import { userFacingError } from "../../src/lib/user-facing-error";
 import { setGuestMode } from "../../src/lib/guest-mode";
@@ -68,6 +69,7 @@ export default function LoginScreen() {
   const continueAsGuest = async () => {
     await SecureStore.deleteItemAsync("stella-mobile_cookie");
     clearCachedToken();
+    clearCachedDesktopBridge();
     const store = (authClient as unknown as {
       $store?: { notify: (signal: string) => void };
     }).$store;

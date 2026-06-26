@@ -328,7 +328,100 @@ const filterDesktopBridgeArtifacts = (
     ? artifacts
     : artifacts.filter((artifact) => artifact.payload.kind !== "source-diff");
 
+type CachedDesktopBridge = {
+  connection: DesktopBridgeConnection;
+  expiresAt: number;
+};
+
+/**
+ * One encrypted bridge session is reused across sends/loads instead of being
+ * re-handshaked per message. The desktop caps sessions at 15 minutes; we
+ * refresh a minute early, and before reusing we probe an authenticated
+ * endpoint so a session the desktop has forgotten (it slept, restarted, or
+ * rotated its tunnel) triggers a fresh handshake rather than a 401.
+ */
+const desktopBridgeCache = new Map<string, CachedDesktopBridge>();
+const inflightBridgeResolves = new Map<
+  string,
+  Promise<DesktopBridgeConnection>
+>();
+const BRIDGE_SESSION_REFRESH_MARGIN_MS = 60_000;
+
+const getCachedDesktopBridge = (
+  desktopDeviceId: string,
+): DesktopBridgeConnection | null => {
+  const entry = desktopBridgeCache.get(desktopDeviceId);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now() + BRIDGE_SESSION_REFRESH_MARGIN_MS) {
+    desktopBridgeCache.delete(desktopDeviceId);
+    return null;
+  }
+  return entry.connection;
+};
+
+/**
+ * Forget cached bridge sessions. Call on sign-out / unpair so a signed-out
+ * phone can't keep talking to the desktop on a still-valid cached session.
+ */
+export const clearCachedDesktopBridge = (desktopDeviceId?: string) => {
+  if (desktopDeviceId) {
+    desktopBridgeCache.delete(desktopDeviceId);
+  } else {
+    desktopBridgeCache.clear();
+  }
+};
+
+/** Authenticated liveness probe — confirms the desktop still honors this session. */
+const isCachedBridgeAlive = async (
+  connection: DesktopBridgeConnection,
+): Promise<boolean> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRIDGE_HEALTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${connection.baseUrl}/bridge/bootstrap`, {
+      headers: connection.headers,
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export async function resolveDesktopBridge(
+  access: StoredPhoneAccess,
+  onStatus?: (status: DesktopBridgeSendStatus) => void,
+  opts?: { forceRefresh?: boolean },
+): Promise<DesktopBridgeConnection> {
+  const desktopDeviceId = access.desktopDeviceId;
+
+  if (opts?.forceRefresh) {
+    clearCachedDesktopBridge(desktopDeviceId);
+  } else {
+    const cached = getCachedDesktopBridge(desktopDeviceId);
+    if (cached && (await isCachedBridgeAlive(cached))) {
+      onStatus?.("connecting");
+      return cached;
+    }
+    if (cached) {
+      clearCachedDesktopBridge(desktopDeviceId);
+    }
+    const inflight = inflightBridgeResolves.get(desktopDeviceId);
+    if (inflight) return inflight;
+  }
+
+  const promise = handshakeDesktopBridge(access, onStatus).finally(() => {
+    if (inflightBridgeResolves.get(desktopDeviceId) === promise) {
+      inflightBridgeResolves.delete(desktopDeviceId);
+    }
+  });
+  inflightBridgeResolves.set(desktopDeviceId, promise);
+  return promise;
+}
+
+async function handshakeDesktopBridge(
   access: StoredPhoneAccess,
   onStatus?: (status: DesktopBridgeSendStatus) => void,
 ): Promise<DesktopBridgeConnection> {
@@ -369,7 +462,7 @@ export async function resolveDesktopBridge(
   onStatus?.("connecting");
 
   const bridgeSession = await createDesktopBridgeSession(access, baseUrl);
-  return {
+  const connection: DesktopBridgeConnection = {
     baseUrl,
     headers: bridgeSession.headers,
     crypto: bridgeSession.crypto,
@@ -378,6 +471,11 @@ export async function resolveDesktopBridge(
       bridgeSession.headers,
     ),
   };
+  desktopBridgeCache.set(access.desktopDeviceId, {
+    connection,
+    expiresAt: bridgeSession.session.expiresAt,
+  });
+  return connection;
 }
 
 export async function invokeDesktopBridge<T>(
@@ -1182,8 +1280,12 @@ export async function sendDesktopBridgeChat({
       throw new BridgeAbortError();
     }
     // Re-resolve in case the desktop rotated its tunnel URL or token while we
-    // were away; fall back to the last good bridge if discovery hiccups.
-    activeBridge = await resolveDesktopBridge(access).catch(() => activeBridge);
+    // were away; force a fresh handshake so we never re-attach with a session
+    // the desktop has already dropped. Fall back to the last good bridge if
+    // discovery hiccups.
+    activeBridge = await resolveDesktopBridge(access, undefined, {
+      forceRefresh: true,
+    }).catch(() => activeBridge);
   }
 
   if (finalError) {
