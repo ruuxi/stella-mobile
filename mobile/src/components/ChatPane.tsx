@@ -1342,18 +1342,11 @@ export type ChatPaneProps = {
   onChangeAttachments?: (next: ImagePicker.ImagePickerAsset[]) => void;
 
   /**
-   * Optional `View computer` action to surface from the `+` menu.
-   * When provided, renders the menu entry in both the pill and expanded forms.
+   * Opens the computer device sheet (status, wake, view-screen, artifacts,
+   * model settings). When provided, a floating gear button renders above the
+   * composer. The cloud chat omits it.
    */
-  onViewComputer?: () => void;
-
-  /** Current model label shown on the floating "Model" row. */
-  selectedModelLabel?: string;
-  /**
-   * Opens the model tray (engine / model / thinking). When provided, the
-   * floating menu shows a "Model" row that opens the tray on tap.
-   */
-  onOpenModelSettings?: () => void;
+  onOpenDeviceSheet?: () => void;
 
   /** Headers passed to the dictation upload (e.g. mobile device id for guests). */
   dictationAnonymous: boolean;
@@ -1361,8 +1354,6 @@ export type ChatPaneProps = {
 
   /** Opens a desktop artifact linked from an assistant message. */
   onOpenArtifact?: (artifact: ChatArtifact) => void;
-  /** Opens the artifacts list sheet from the floating menu. */
-  onOpenArtifacts?: () => void;
 };
 
 export function ChatPane({
@@ -1382,13 +1373,10 @@ export function ChatPane({
   enableAttachments,
   attachments,
   onChangeAttachments,
-  onViewComputer,
-  selectedModelLabel,
-  onOpenModelSettings,
+  onOpenDeviceSheet,
   dictationAnonymous,
   dictationHeaders,
   onOpenArtifact,
-  onOpenArtifacts,
 }: ChatPaneProps) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -1673,56 +1661,18 @@ export function ChatPane({
     return out;
   }, [enableAttachments, pickImage, readAloud, takePhoto]);
 
-  // Floating menu (computer chat only): "View computer" + model selection.
-  // Surfaced as a floating button above the composer rather than buried in
-  // the "+" menu. The chat tab passes none of these, so it renders nothing.
-  const floatingMenuOptions = useMemo<PlusMenuOption[]>(() => {
-    const out: PlusMenuOption[] = [];
-    if (onViewComputer) {
-      out.push({
-        id: "view-computer",
-        label: "View computer",
-        icon: "monitor",
-        onSelect: onViewComputer,
-      });
-    }
-    if (onOpenArtifacts) {
-      out.push({
-        id: "artifacts",
-        label: "Artifacts",
-        icon: "box",
-        onSelect: onOpenArtifacts,
-      });
-    }
-    if (onOpenModelSettings) {
-      out.push({
-        id: "model-picker",
-        label: selectedModelLabel ?? "Model",
-        icon: "cpu",
-        onSelect: onOpenModelSettings,
-      });
-    }
-    return out;
-  }, [onOpenArtifacts, onOpenModelSettings, onViewComputer, selectedModelLabel]);
-
+  // Floating gear button (computer chat only): opens the device sheet — status,
+  // wake, view-screen, artifacts, model settings. The cloud chat passes no
+  // handler, so nothing renders.
   const floatingAnchorRef = useRef<View>(null);
-  const [floatingMenuAnchor, setFloatingMenuAnchor] =
-    useState<AnchorRect | null>(null);
-  const hasFloatingMenu = floatingMenuOptions.length > 0;
+  const hasFloatingMenu = Boolean(onOpenDeviceSheet);
 
   const onPressFloating = useCallback(() => {
-    const anchor = floatingAnchorRef.current;
-    if (!anchor) return;
+    if (!onOpenDeviceSheet) return;
     tapLight();
     Keyboard.dismiss();
-    anchor.measureInWindow((x, y, width, height) => {
-      setFloatingMenuAnchor({ x, y, width, height });
-    });
-  }, []);
-  const dismissFloatingMenu = useCallback(
-    () => setFloatingMenuAnchor(null),
-    [],
-  );
+    onOpenDeviceSheet();
+  }, [onOpenDeviceSheet]);
 
   // Hide the floating button while scrolling up (reading back through
   // history) and bring it back when scrolling down toward the latest.
@@ -2064,7 +2014,7 @@ export function ChatPane({
               ]}
             >
               <Pressable
-                accessibilityLabel="Computer options"
+                accessibilityLabel="Computer settings"
                 accessibilityRole="button"
                 hitSlop={6}
                 onPress={onPressFloating}
@@ -2083,7 +2033,7 @@ export function ChatPane({
                 >
                   <Animated.View style={{ opacity: floatingAnim }}>
                     <Icon
-                      name="more-horizontal"
+                      name="settings"
                       size={20}
                       color={colors.textMuted}
                       weight="semibold"
@@ -2358,14 +2308,6 @@ export function ChatPane({
         anchor={plusMenuAnchor}
         options={plusMenuOptions}
         onDismiss={dismissPlusMenu}
-        colors={colors}
-        containerRef={rootRef}
-      />
-      <PlusMenuPopover
-        visible={Boolean(floatingMenuAnchor) && hasFloatingMenu}
-        anchor={floatingMenuAnchor}
-        options={floatingMenuOptions}
-        onDismiss={dismissFloatingMenu}
         colors={colors}
         containerRef={rootRef}
       />

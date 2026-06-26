@@ -1,26 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
-import { Icon, type IconName } from "../../src/components/Icon";
 import {
   getDesktopBridgeStatus,
   getPreferredPhoneAccess,
   requestDesktopConnection,
   type StoredPhoneAccess,
 } from "../../src/lib/phone-access";
-import { loadChatMessages } from "../../src/lib/offline-chat-storage";
 import { updateStellaWidget } from "../../src/lib/home-widget";
 import { tapLight, notifySuccess } from "../../src/lib/haptics";
-import { useComputerModelSettings } from "../../src/lib/use-computer-model-settings";
+import { useChatThread } from "../../src/lib/use-chat-thread";
+import { useIsOffline } from "../../src/lib/use-network-status";
 import {
   useTopBarStatus,
   type DesktopConnection,
@@ -28,11 +19,10 @@ import {
 import { useColors } from "../../src/theme/theme-context";
 import { type Colors } from "../../src/theme/colors";
 import { fonts } from "../../src/theme/fonts";
-import { fadeHex } from "../../src/theme/oklch";
 import type { ChatArtifact } from "../../src/types";
+import { ChatPane } from "../../src/components/ChatPane";
 import { ArtifactViewer } from "../../src/components/ArtifactViewer";
-import { ArtifactListSheet } from "../../src/components/ArtifactListSheet";
-import { ComputerSettingsSheet } from "../../src/components/ComputerSettingsSheet";
+import { ComputerDeviceSheet } from "../../src/components/ComputerDeviceSheet";
 import { ConnectHeroAnimation } from "../../src/components/ConnectHeroAnimation";
 import { PairPhoneSheet } from "../../src/components/PairPhoneSheet";
 
@@ -40,7 +30,6 @@ const STATUS_POLL_MS = 20_000;
 /** Faster cadence while a wake request is in flight. */
 const WAKE_POLL_MS = 3_000;
 const WAKE_WINDOW_MS = 30_000;
-const MAX_LISTED_ARTIFACTS = 20;
 
 type DeviceStatus = {
   checking: boolean;
@@ -49,16 +38,15 @@ type DeviceStatus = {
 };
 
 /**
- * The Computer tab is the paired desktop's device surface: status, wake,
- * view-screen, artifacts, and model settings. The conversation itself lives
- * on the Chat tab, which routes to this computer automatically.
+ * The Computer tab hosts the conversation with the paired desktop's Stella
+ * agent. Its device controls (status, wake, view-screen, artifacts, model
+ * settings) live in a sheet opened from the composer's gear button.
  */
 export default function ComputerScreen() {
-  const guest = isGuest();
-  if (guest) {
+  if (isGuest()) {
     return <GuestComputerSurface />;
   }
-  return <PairedComputerSurface />;
+  return <ComputerRouter />;
 }
 
 function GuestComputerSurface() {
@@ -81,32 +69,19 @@ function GuestComputerSurface() {
   );
 }
 
-function PairedComputerSurface() {
+/**
+ * Loads the pairing state and routes to the right surface. Each branch is its
+ * own component so the chat surface can call its hooks unconditionally once a
+ * valid access is known.
+ */
+function ComputerRouter() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const modelSettings = useComputerModelSettings();
-  const { setConnection: setTopBarConnection } = useTopBarStatus();
-
   const [phoneAccess, setPhoneAccess] = useState<StoredPhoneAccess | null>(
     null,
   );
   const [paired, setPaired] = useState<boolean | null>(null);
   const [pairSheetOpen, setPairSheetOpen] = useState(false);
-  const [modelSheetOpen, setModelSheetOpen] = useState(false);
-  const [artifactsOpen, setArtifactsOpen] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(
-    null,
-  );
-  const [artifacts, setArtifacts] = useState<ChatArtifact[]>([]);
-  const [status, setStatus] = useState<DeviceStatus>({
-    checking: true,
-    available: null,
-    platform: null,
-  });
-  const [waking, setWaking] = useState(false);
-  const wakeUntilRef = useRef(0);
 
   useEffect(() => {
     void getPreferredPhoneAccess().then((access) => {
@@ -118,105 +93,11 @@ function PairedComputerSurface() {
     });
   }, []);
 
-  // Artifacts come from the unified chat transcript — newest first, deduped.
-  useEffect(() => {
-    void loadChatMessages().then((messages) => {
-      const seen = new Set<string>();
-      const out: ChatArtifact[] = [];
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        for (const artifact of messages[i].artifacts ?? []) {
-          if (seen.has(artifact.id)) continue;
-          seen.add(artifact.id);
-          out.push(artifact);
-          if (out.length >= MAX_LISTED_ARTIFACTS) break;
-        }
-        if (out.length >= MAX_LISTED_ARTIFACTS) break;
-      }
-      setArtifacts(out);
-    });
-  }, []);
-
-  const checkStatus = useCallback(async (desktopDeviceId: string) => {
-    try {
-      const next = await getDesktopBridgeStatus(desktopDeviceId);
-      setStatus({
-        checking: false,
-        available: next.available,
-        platform: next.platform,
-      });
-      updateStellaWidget({
-        paired: true,
-        online: next.available,
-        ...(next.platform ? { platform: next.platform } : {}),
-      });
-      return next.available;
-    } catch {
-      setStatus((prev) => ({ ...prev, checking: false, available: false }));
-      return false;
-    }
-  }, []);
-
-  // Poll bridge availability while the surface is mounted; tighten the
-  // cadence while a wake request is pending.
-  useEffect(() => {
-    if (!phoneAccess) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const tick = async () => {
-      const available = await checkStatus(phoneAccess.desktopDeviceId);
-      if (cancelled) return;
-      const wakePending = !available && Date.now() < wakeUntilRef.current;
-      if (available || !wakePending) {
-        setWaking(false);
-      }
-      timer = setTimeout(
-        () => void tick(),
-        wakePending ? WAKE_POLL_MS : STATUS_POLL_MS,
-      );
-    };
-
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [checkStatus, phoneAccess]);
-
-  const connection: DesktopConnection | null =
-    paired !== true
-      ? null
-      : status.checking || waking
-        ? "connecting"
-        : status.available
-          ? "connected"
-          : "disconnected";
-
-  useEffect(() => {
-    setTopBarConnection(connection);
-  }, [connection, setTopBarConnection]);
-  useEffect(() => () => setTopBarConnection(null), [setTopBarConnection]);
-
-  useEffect(() => {
-    if (status.available === true && waking) {
-      notifySuccess();
-      setWaking(false);
-    }
-  }, [status.available, waking]);
-
-  const wake = useCallback(() => {
-    if (!phoneAccess) return;
-    tapLight();
-    setWaking(true);
-    wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
-    void requestDesktopConnection(phoneAccess).catch(() => setWaking(false));
-  }, [phoneAccess]);
-
   if (paired === null) {
     return <View style={styles.centerSurface} />;
   }
 
-  if (paired === false) {
+  if (paired === false || !phoneAccess) {
     return (
       <View style={styles.centerSurface}>
         <View style={styles.heroBlock}>
@@ -250,164 +131,187 @@ function PairedComputerSurface() {
     );
   }
 
+  return (
+    <ComputerChatSurface
+      access={phoneAccess}
+      onAccessChange={setPhoneAccess}
+    />
+  );
+}
+
+function ComputerChatSurface({
+  access,
+  onAccessChange,
+}: {
+  access: StoredPhoneAccess;
+  onAccessChange: (access: StoredPhoneAccess) => void;
+}) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const offline = useIsOffline();
+  const { setConnection: setTopBarConnection } = useTopBarStatus();
+
+  const transport = useMemo(
+    () => ({ kind: "desktop" as const, access }),
+    [access],
+  );
+  const thread = useChatThread({ threadId: "computer", transport });
+
+  const [deviceSheetOpen, setDeviceSheetOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<ChatArtifact | null>(
+    null,
+  );
+  const [status, setStatus] = useState<DeviceStatus>({
+    checking: true,
+    available: null,
+    platform: null,
+  });
+  const [waking, setWaking] = useState(false);
+  const wakeUntilRef = useRef(0);
+
+  const checkStatus = useCallback(async (desktopDeviceId: string) => {
+    try {
+      const next = await getDesktopBridgeStatus(desktopDeviceId);
+      setStatus({
+        checking: false,
+        available: next.available,
+        platform: next.platform,
+      });
+      updateStellaWidget({
+        paired: true,
+        online: next.available,
+        ...(next.platform ? { platform: next.platform } : {}),
+      });
+      return next.available;
+    } catch {
+      setStatus((prev) => ({ ...prev, checking: false, available: false }));
+      return false;
+    }
+  }, []);
+
+  // Poll bridge availability while the surface is mounted; tighten the cadence
+  // while a wake request is pending.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      const available = await checkStatus(access.desktopDeviceId);
+      if (cancelled) return;
+      const wakePending = !available && Date.now() < wakeUntilRef.current;
+      if (available || !wakePending) {
+        setWaking(false);
+      }
+      timer = setTimeout(
+        () => void tick(),
+        wakePending ? WAKE_POLL_MS : STATUS_POLL_MS,
+      );
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [checkStatus, access.desktopDeviceId]);
+
+  const connection: DesktopConnection =
+    status.checking || waking
+      ? "connecting"
+      : status.available
+        ? "connected"
+        : "disconnected";
+
+  useEffect(() => {
+    setTopBarConnection(connection);
+  }, [connection, setTopBarConnection]);
+  useEffect(() => () => setTopBarConnection(null), [setTopBarConnection]);
+
+  useEffect(() => {
+    if (status.available === true && waking) {
+      notifySuccess();
+      setWaking(false);
+    }
+  }, [status.available, waking]);
+
+  const wake = useCallback(() => {
+    tapLight();
+    setWaking(true);
+    wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
+    void requestDesktopConnection(access).catch(() => setWaking(false));
+  }, [access]);
+
   const platformLabel = status.platform?.trim() || "Your computer";
   const statusLabel = status.checking
-    ? "Checking\u2026"
+    ? "Checking…"
     : waking
-      ? "Waking up\u2026"
+      ? "Waking up…"
       : status.available
         ? "Connected"
         : "Asleep";
 
-  const rows: {
-    id: string;
-    icon: IconName;
-    label: string;
-    trailing?: string;
-    onPress: () => void;
-  }[] = [
-    {
-      id: "view",
-      icon: "monitor",
-      label: "View screen",
-      onPress: () => {
-        tapLight();
-        router.push("/stella");
-      },
-    },
-    {
-      id: "artifacts",
-      icon: "box",
-      label: "Artifacts",
-      onPress: () => {
-        tapLight();
-        setArtifactsOpen(true);
-      },
-    },
-    {
-      id: "model",
-      icon: "cpu",
-      label: "Model",
-      trailing: modelSettings.selectedModelLabel,
-      onPress: () => {
-        tapLight();
-        setModelSheetOpen(true);
-      },
-    },
-    {
-      id: "pair",
-      icon: "smartphone",
-      label: "Pair another computer",
-      onPress: () => {
-        tapLight();
-        setPairSheetOpen(true);
-      },
-    },
-  ];
+  const canSubmit =
+    (thread.draft.trim().length > 0 || thread.attachments.length > 0) &&
+    !offline;
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={[
-        styles.scrollContent,
-        { paddingBottom: 32 + insets.bottom },
-      ]}
-    >
-      <View style={styles.deviceHero}>
-        <ConnectHeroAnimation />
-        <Text style={styles.deviceName}>{platformLabel}</Text>
-        <View style={styles.statusRow}>
-          {connection === "connecting" ? null : (
-            <View
-              style={[
-                styles.statusDot,
-                {
-                  backgroundColor: status.available
-                    ? colors.ok
-                    : colors.textMuted,
-                },
-              ]}
-            />
-          )}
-          <Text style={styles.statusText}>{statusLabel}</Text>
-          {!status.checking && !status.available && !waking ? (
-            <Pressable
-              onPress={wake}
-              hitSlop={8}
-              accessibilityLabel="Wake your computer"
-              style={({ pressed }) => pressed && styles.wakePressed}
-            >
-              <Text style={styles.wakeText}>Wake up</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-
-      <View style={styles.rowGroup}>
-        {rows.map((row, index) => (
-          <Pressable
-            key={row.id}
-            onPress={row.onPress}
-            accessibilityLabel={row.label}
-            style={({ pressed }) => [
-              styles.row,
-              index > 0 && styles.rowDivider,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <Icon
-              name={row.icon}
-              size={18}
-              color={colors.textMuted}
-              style={styles.rowIcon}
-            />
-            <Text style={styles.rowLabel}>{row.label}</Text>
-            {row.trailing ? (
-              <Text style={styles.rowTrailing} numberOfLines={1}>
-                {row.trailing}
-              </Text>
-            ) : null}
-            <Icon name="chevron-right" size={15} color={colors.textMuted} />
-          </Pressable>
-        ))}
-      </View>
-
-      <ComputerSettingsSheet
-        visible={modelSheetOpen}
-        onClose={() => setModelSheetOpen(false)}
-        access={phoneAccess}
-        catalog={modelSettings.catalog}
-        onApplied={modelSettings.syncFromSnapshot}
+    <View style={styles.screen}>
+      <ChatPane
+        messages={thread.messages}
+        streaming={thread.sending}
+        workingStatus={thread.workingStatus}
+        emptyContent={
+          <Text style={styles.emptyText}>Ask your computer anything</Text>
+        }
+        historyLoading={!thread.storageLoaded}
+        draft={thread.draft}
+        onChangeDraft={thread.setDraft}
+        canSubmit={canSubmit}
+        onSubmit={thread.send}
+        onStop={thread.stop}
+        placeholder="Message your computer"
+        offline={offline}
+        enableAttachments
+        attachments={thread.attachments}
+        onChangeAttachments={thread.setAttachments}
+        dictationAnonymous={false}
+        onOpenArtifact={setSelectedArtifact}
+        onOpenDeviceSheet={() => setDeviceSheetOpen(true)}
       />
-      <ArtifactListSheet
-        visible={artifactsOpen}
-        artifacts={artifacts}
-        onClose={() => setArtifactsOpen(false)}
-        onSelect={setSelectedArtifact}
+      <ComputerDeviceSheet
+        visible={deviceSheetOpen}
+        onClose={() => setDeviceSheetOpen(false)}
+        access={access}
+        platformLabel={platformLabel}
+        statusLabel={statusLabel}
+        statusAvailable={status.available}
+        connecting={status.checking || waking}
+        showWake={!status.checking && !status.available && !waking}
+        onWake={wake}
+        artifacts={thread.conversationArtifacts}
+        onRepaired={onAccessChange}
       />
       <ArtifactViewer
         visible={Boolean(selectedArtifact)}
         artifact={selectedArtifact}
-        access={phoneAccess}
+        access={access}
         onClose={() => setSelectedArtifact(null)}
       />
-      <PairPhoneSheet
-        visible={pairSheetOpen}
-        onClose={() => setPairSheetOpen(false)}
-        onPaired={(access) => {
-          setPhoneAccess(access);
-          setPaired(true);
-          setPairSheetOpen(false);
-        }}
-      />
-    </ScrollView>
+    </View>
   );
 }
 
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
     screen: { flex: 1 },
-    scrollContent: { paddingTop: 8 },
+    emptyText: {
+      color: colors.textMuted,
+      fontFamily: fonts.display.regularItalic,
+      fontSize: 22,
+      letterSpacing: -0.5,
+      opacity: 0.45,
+      textAlign: "center",
+    },
     centerSurface: {
       alignItems: "center",
       flex: 1,
@@ -458,79 +362,5 @@ const makeStyles = (colors: Colors) =>
       fontFamily: fonts.sans.semiBold,
       fontSize: 15,
       letterSpacing: -0.3,
-    },
-
-    deviceHero: {
-      alignItems: "center",
-      gap: 4,
-      marginTop: 32,
-    },
-    deviceName: {
-      color: colors.text,
-      fontFamily: fonts.display.regular,
-      fontSize: 26,
-      letterSpacing: -1,
-      marginTop: 4,
-    },
-    statusRow: {
-      alignItems: "center",
-      flexDirection: "row",
-      gap: 6,
-      marginTop: 2,
-    },
-    statusDot: {
-      borderRadius: 3,
-      height: 6,
-      width: 6,
-    },
-    statusText: {
-      color: colors.textMuted,
-      fontFamily: fonts.sans.regular,
-      fontSize: 14,
-      letterSpacing: -0.2,
-    },
-    wakeText: {
-      color: colors.accent,
-      fontFamily: fonts.sans.medium,
-      fontSize: 14,
-      letterSpacing: -0.2,
-      marginLeft: 6,
-    },
-    wakePressed: {
-      opacity: 0.7,
-    },
-
-    rowGroup: {
-      marginTop: 36,
-    },
-    row: {
-      alignItems: "center",
-      flexDirection: "row",
-      gap: 14,
-      paddingVertical: 15,
-    },
-    rowDivider: {
-      borderTopColor: fadeHex(colors.border, 0.7),
-      borderTopWidth: StyleSheet.hairlineWidth,
-    },
-    rowPressed: {
-      opacity: 0.7,
-    },
-    rowIcon: {
-      width: 22,
-    },
-    rowLabel: {
-      color: colors.text,
-      flex: 1,
-      fontFamily: fonts.sans.medium,
-      fontSize: 15,
-      letterSpacing: -0.2,
-    },
-    rowTrailing: {
-      color: colors.textMuted,
-      fontFamily: fonts.sans.regular,
-      fontSize: 13,
-      letterSpacing: -0.1,
-      maxWidth: 140,
     },
   } as const);

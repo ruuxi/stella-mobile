@@ -2,10 +2,22 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ChatMessage } from "../types";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
-// The unified chat transcript. The key predates unification (it was the
-// cloud-only chat store) and is kept so existing local history carries over.
-const CHAT_STORAGE_KEY = "stella-mobile-offline-chat-v1";
-const CHAT_SYNC_STATE_KEY = "stella-mobile-chat-sync-state-v1";
+/**
+ * The two independent chat transcripts. The cloud thread keeps the original
+ * key (it was the cloud-only store before chat unification) so existing local
+ * history stays put; the computer thread gets its own key and re-hydrates from
+ * the desktop bridge on mount.
+ */
+export type ChatThreadId = "cloud" | "computer";
+
+const MESSAGES_KEY: Record<ChatThreadId, string> = {
+  cloud: "stella-mobile-offline-chat-v1",
+  computer: "stella-mobile-computer-chat-v1",
+};
+const SYNC_STATE_KEY: Record<ChatThreadId, string> = {
+  cloud: "stella-mobile-chat-sync-state-v1",
+  computer: "stella-mobile-computer-sync-state-v1",
+};
 const MAX_MESSAGES = 1000;
 
 export type ChatSyncState = {
@@ -47,9 +59,11 @@ function parseRow(row: unknown): ChatMessage | null {
   };
 }
 
-export async function loadChatMessages(): Promise<ChatMessage[]> {
+export async function loadChatMessages(
+  thread: ChatThreadId,
+): Promise<ChatMessage[]> {
   try {
-    const raw = await AsyncStorage.getItem(CHAT_STORAGE_KEY);
+    const raw = await AsyncStorage.getItem(MESSAGES_KEY[thread]);
     if (!raw) {
       return [];
     }
@@ -71,10 +85,11 @@ export async function loadChatMessages(): Promise<ChatMessage[]> {
 }
 
 export async function saveChatMessages(
+  thread: ChatThreadId,
   messages: ChatMessage[],
 ): Promise<void> {
   const trimmed = messages.slice(-MAX_MESSAGES);
-  await AsyncStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed));
+  await AsyncStorage.setItem(MESSAGES_KEY[thread], JSON.stringify(trimmed));
 }
 
 const normalizeSyncState = (value: unknown): ChatSyncState => {
@@ -94,9 +109,11 @@ const normalizeSyncState = (value: unknown): ChatSyncState => {
   };
 };
 
-export async function loadChatSyncState(): Promise<ChatSyncState> {
+export async function loadChatSyncState(
+  thread: ChatThreadId,
+): Promise<ChatSyncState> {
   try {
-    const raw = await AsyncStorage.getItem(CHAT_SYNC_STATE_KEY);
+    const raw = await AsyncStorage.getItem(SYNC_STATE_KEY[thread]);
     if (raw) {
       return normalizeSyncState(JSON.parse(raw) as unknown);
     }
@@ -106,11 +123,14 @@ export async function loadChatSyncState(): Promise<ChatSyncState> {
   }
 }
 
-export async function saveChatSyncState(state: ChatSyncState): Promise<void> {
+export async function saveChatSyncState(
+  thread: ChatThreadId,
+  state: ChatSyncState,
+): Promise<void> {
   const next = normalizeSyncState(state);
   if (!next.conversationId && !next.cursor) {
-    await AsyncStorage.removeItem(CHAT_SYNC_STATE_KEY);
+    await AsyncStorage.removeItem(SYNC_STATE_KEY[thread]);
     return;
   }
-  await AsyncStorage.setItem(CHAT_SYNC_STATE_KEY, JSON.stringify(next));
+  await AsyncStorage.setItem(SYNC_STATE_KEY[thread], JSON.stringify(next));
 }
