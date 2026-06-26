@@ -39,7 +39,7 @@ import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
-import { GlassGroup, GlassSurface } from "./glass";
+import { GlassSurface } from "./glass";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
@@ -2005,11 +2005,16 @@ export function ChatPane({
             </MaskedView>
           </>
         )}
-        {/* Floating glass controls share one GlassGroup so the FAB and the
-            computer-options button flow into each other when they get close —
-            the native Liquid Glass merge. Layout is untouched: the group is a
-            pass-through absolute overlay. */}
-        <GlassGroup pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        {/* Floating glass controls (scroll-to-bottom FAB + computer-options
+            button) sit in a pass-through absolute overlay. This MUST be a plain
+            View, not a GlassGroup/GlassContainer: the native glass container is
+            a raw view that ignores `pointerEvents`, so a full-screen one swallows
+            every touch over the chat (no scroll/tap) and, as a screen-spanning
+            glass layer beneath the in-tree menu popovers, triggers Apple's
+            glass-on-glass suppression that renders those menus clear. A plain
+            `box-none` View passes touches through to the list and lets each
+            button — and the popovers — keep their own Liquid Glass. */}
+        <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
           {!historyLoading && !empty ? (
             <ScrollToBottomFab
               visible={scroll.awayFromBottom}
@@ -2069,7 +2074,7 @@ export function ChatPane({
               </Pressable>
             </Animated.View>
           ) : null}
-        </GlassGroup>
+        </View>
         {searchOpen && searchActive ? (
           <View
             style={[

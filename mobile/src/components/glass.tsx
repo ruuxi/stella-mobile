@@ -11,7 +11,6 @@ import {
   type ViewStyle,
 } from "react-native";
 import {
-  GlassContainer,
   GlassView,
   isLiquidGlassAvailable,
   type GlassStyle,
@@ -147,26 +146,6 @@ export function GlassSurface({
       {children}
     </View>
   );
-}
-
-type GlassGroupProps = ViewProps & {
-  /**
-   * Distance (pt) at which sibling glass surfaces start flowing into each
-   * other — the signature Liquid Glass merge animation.
-   */
-  spacing?: number;
-};
-
-/**
- * Groups nearby glass surfaces so they merge fluidly as they approach each
- * other (Apple's `UIGlassContainerEffect`). Renders a plain `<View>` when
- * Liquid Glass is unavailable. Purely visual — layout is unchanged.
- */
-export function GlassGroup({ spacing = 24, ...rest }: GlassGroupProps) {
-  if (liquidGlassSupported) {
-    return <GlassContainer spacing={spacing} {...rest} />;
-  }
-  return <View {...rest} />;
 }
 
 type GlassCardProps = ViewProps & {
