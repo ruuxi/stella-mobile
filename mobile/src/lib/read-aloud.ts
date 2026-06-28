@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   createAudioPlayer,
@@ -22,6 +22,41 @@ let playbackGeneration = 0;
 const emit = () => {
   for (const listener of listeners) listener();
 };
+
+// Which message is currently being read aloud, so a message's sound button can
+// show a stop state and reset itself when playback ends. `null` = nothing
+// playing. Tracked here (not in a component) because playback is a singleton.
+let speakingMessageId: string | null = null;
+const speakingListeners = new Set<() => void>();
+const emitSpeaking = () => {
+  for (const listener of speakingListeners) listener();
+};
+const setSpeakingMessageId = (id: string | null) => {
+  if (speakingMessageId === id) return;
+  speakingMessageId = id;
+  emitSpeaking();
+};
+
+const speakingStore = {
+  subscribe(listener: () => void) {
+    speakingListeners.add(listener);
+    return () => {
+      speakingListeners.delete(listener);
+    };
+  },
+  getSnapshot() {
+    return speakingMessageId;
+  },
+};
+
+/** The id of the message currently being read aloud, or `null`. */
+export function useSpeakingMessage() {
+  return useSyncExternalStore(
+    speakingStore.subscribe,
+    speakingStore.getSnapshot,
+    speakingStore.getSnapshot,
+  );
+}
 
 export const readAloudStore = {
   subscribe(listener: () => void) {
@@ -119,6 +154,7 @@ async function fetchInworldReadAloudAudio(text: string) {
 
 export function stopReadAloud() {
   playbackGeneration += 1;
+  setSpeakingMessageId(null);
   const player = currentPlayer;
   currentPlayer = null;
   if (player) {
@@ -142,7 +178,7 @@ export function stopReadAloud() {
   }
 }
 
-export async function speakReply(text: string) {
+export async function speakReply(text: string, messageId?: string) {
   const spoken = stripForSpeech(text);
   if (!spoken) return;
 
@@ -167,8 +203,16 @@ export async function speakReply(text: string) {
     const player = createAudioPlayer({ uri: file.uri });
     currentFile = file;
     currentPlayer = player;
+    // Reset the speaking state when the clip finishes on its own so the
+    // message's sound button flips back from stop to play.
+    player.addListener("playbackStatusUpdate", (status) => {
+      if (generation !== playbackGeneration) return;
+      if (status.didJustFinish) setSpeakingMessageId(null);
+    });
+    setSpeakingMessageId(messageId ?? null);
     player.play();
   } catch (error) {
+    setSpeakingMessageId(null);
     console.warn("[read-aloud] playback failed", error);
   }
 }

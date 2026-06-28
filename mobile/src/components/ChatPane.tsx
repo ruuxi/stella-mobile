@@ -48,7 +48,12 @@ import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
 import { useChatSearch } from "../lib/chat-search";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
-import { speakReply, useReadAloudPreference } from "../lib/read-aloud";
+import {
+  speakReply,
+  stopReadAloud,
+  useReadAloudPreference,
+  useSpeakingMessage,
+} from "../lib/read-aloud";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
@@ -489,6 +494,86 @@ const shareMessageText = (text: string) => {
 
 type ChatStyles = ReturnType<typeof makeStyles>;
 
+/**
+ * The always-visible action row under a finished assistant message: copy, read
+ * aloud (toggles to stop while playing), and share. These mirror the long-press
+ * menu so the common actions are one tap away instead of a hold. The row reads
+ * the singleton speaking state directly so only it re-renders as playback
+ * starts/stops, not the whole transcript.
+ */
+const AssistantActions = memo(function AssistantActions({
+  text,
+  messageId,
+  styles,
+  colors,
+}: {
+  text: string;
+  messageId: string;
+  styles: ChatStyles;
+  colors: Colors;
+}) {
+  const speakingId = useSpeakingMessage();
+  const isSpeaking = speakingId === messageId;
+  if (!text.trim()) return null;
+  return (
+    <View style={styles.messageActions}>
+      <Pressable
+        onPress={() => {
+          tapLight();
+          copyMessageText(text);
+        }}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Copy message"
+        style={({ pressed }) => [
+          styles.messageActionButton,
+          pressed && styles.messageActionButtonPressed,
+        ]}
+      >
+        <Icon name="copy" size={16} color={colors.textMuted} />
+      </Pressable>
+      <Pressable
+        onPress={() => {
+          tapLight();
+          if (isSpeaking) {
+            stopReadAloud();
+          } else {
+            void speakReply(text, messageId);
+          }
+        }}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={isSpeaking ? "Stop reading aloud" : "Read aloud"}
+        style={({ pressed }) => [
+          styles.messageActionButton,
+          pressed && styles.messageActionButtonPressed,
+        ]}
+      >
+        <Icon
+          name={isSpeaking ? "stop" : "volume-2"}
+          size={16}
+          color={isSpeaking ? colors.text : colors.textMuted}
+        />
+      </Pressable>
+      <Pressable
+        onPress={() => {
+          tapLight();
+          shareMessageText(text);
+        }}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Share message"
+        style={({ pressed }) => [
+          styles.messageActionButton,
+          pressed && styles.messageActionButtonPressed,
+        ]}
+      >
+        <Icon name="share" size={16} color={colors.textMuted} />
+      </Pressable>
+    </View>
+  );
+});
+
 /** Anchor passed to the message-actions popover (the long-press point). */
 type MessageMenuRequest = { message: ChatMessage; anchor: AnchorRect };
 
@@ -576,12 +661,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const artifacts = item.artifacts ?? [];
   const hasText = item.text.trim().length > 0;
   return (
-    <Pressable
-      onLongPress={openMenu}
-      delayLongPress={350}
-      accessibilityLabel="Long press for message actions"
-      style={styles.assistantRow}
-    >
+    <View style={styles.assistantRow}>
       {hasText ? (
         <AssistantMarkdown
           text={item.text}
@@ -622,7 +702,15 @@ const ChatMessageRow = memo(function ChatMessageRow({
           Answered while your computer was offline
         </Text>
       ) : null}
-    </Pressable>
+      {!isStreaming ? (
+        <AssistantActions
+          text={item.text}
+          messageId={item.id}
+          styles={styles}
+          colors={colors}
+        />
+      ) : null}
+    </View>
   );
 });
 
@@ -799,7 +887,16 @@ function ScrollToBottomFab({
           fallbackColor={colors.surface}
           style={styles.scrollToBottomFabGlass}
         >
-          {/* Icon is a child of the glass, so fading it is safe. */}
+          {/* Border + icon are children of the glass, so fading them is safe —
+              keeps the outline from lingering after the material dissolves. */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              StyleSheet.absoluteFill,
+              styles.scrollToBottomFabRing,
+              { opacity: anim },
+            ]}
+          />
           <Animated.View style={{ opacity: anim }}>
             <Icon
               name="chevron-down"
@@ -1497,7 +1594,7 @@ export function ChatPane({
       return;
     }
     spokenAssistantIdsRef.current.add(latestAssistant.id);
-    void speakReply(latestAssistant.text);
+    void speakReply(latestAssistant.text, latestAssistant.id);
   }, [messages, readAloud.enabled, streaming]);
 
   const [expanded, setExpanded] = useState(false);
@@ -1730,10 +1827,13 @@ export function ChatPane({
     null,
   );
   const dismissMessageMenu = useCallback(() => setMessageMenu(null), []);
+  // Only user messages open this menu now \u2014 assistant messages carry their
+  // actions inline (copy / read aloud / share) under the bubble, so the menu
+  // just needs copy + share. Read-aloud lives only on the assistant inline row.
   const messageMenuOptions = useMemo<PlusMenuOption[]>(() => {
     if (!messageMenu) return [];
     const text = messageMenu.message.text;
-    const out: PlusMenuOption[] = [
+    return [
       {
         id: "copy",
         label: "Copy",
@@ -1747,15 +1847,6 @@ export function ChatPane({
         onSelect: () => shareMessageText(text),
       },
     ];
-    if (messageMenu.message.role === "assistant") {
-      out.push({
-        id: "speak",
-        label: "Read aloud",
-        icon: "volume-2",
-        onSelect: () => void speakReply(text),
-      });
-    }
-    return out;
   }, [messageMenu]);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
@@ -2031,6 +2122,16 @@ export function ChatPane({
                   fallbackColor={colors.surface}
                   style={styles.floatingMenuGlass}
                 >
+                  {/* Fading border overlay so the hairline dissolves with the
+                      glass instead of lingering as an outline when hidden. */}
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      StyleSheet.absoluteFill,
+                      styles.floatingMenuRing,
+                      { opacity: floatingAnim },
+                    ]}
+                  />
                   <Animated.View style={{ opacity: floatingAnim }}>
                     <Icon
                       name="settings"
@@ -2371,13 +2472,19 @@ const makeStyles = (colors: Colors) =>
     scrollToBottomFabInner: { flex: 1 },
     scrollToBottomFabGlass: {
       alignItems: "center",
-      borderColor: fadeHex(colors.border, 0.6),
       borderRadius: 16,
-      borderWidth: StyleSheet.hairlineWidth,
       flex: 1,
       justifyContent: "center",
       overflow: "hidden",
       width: 32,
+    },
+    // Hairline definition rendered as a fading overlay (not on the glass view
+    // itself) so it dissolves with the material instead of lingering as a
+    // visible outline once the button is hidden on Liquid Glass.
+    scrollToBottomFabRing: {
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 16,
+      borderWidth: StyleSheet.hairlineWidth,
     },
     scrollToBottomFabPressed: { opacity: 0.88 },
     floatingMenuButton: {
@@ -2395,13 +2502,18 @@ const makeStyles = (colors: Colors) =>
     },
     floatingMenuGlass: {
       alignItems: "center",
-      borderColor: fadeHex(colors.border, 0.6),
       borderRadius: 20,
-      borderWidth: StyleSheet.hairlineWidth,
       flex: 1,
       justifyContent: "center",
       overflow: "hidden",
       width: 40,
+    },
+    // See scrollToBottomFabRing: fading overlay so the hairline dissolves with
+    // the glass rather than lingering as an outline when the button hides.
+    floatingMenuRing: {
+      borderColor: fadeHex(colors.border, 0.6),
+      borderRadius: 20,
+      borderWidth: StyleSheet.hairlineWidth,
     },
     scrollToBottomDot: {
       backgroundColor: colors.accent,
@@ -2549,6 +2661,22 @@ const makeStyles = (colors: Colors) =>
     assistantRow: { paddingVertical: 4 },
     artifactGroup: { gap: 10 },
     artifactGroupSpaced: { marginTop: 10 },
+    messageActions: {
+      flexDirection: "row",
+      gap: 2,
+      marginLeft: -8,
+      marginTop: 6,
+    },
+    messageActionButton: {
+      alignItems: "center",
+      borderRadius: 8,
+      height: 32,
+      justifyContent: "center",
+      width: 32,
+    },
+    messageActionButtonPressed: {
+      backgroundColor: colors.muted,
+    },
     assistantText: {
       color: colors.text,
       fontFamily: fonts.sans.regular,
