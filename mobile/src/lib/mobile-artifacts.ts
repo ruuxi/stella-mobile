@@ -82,6 +82,15 @@ export const isMobileDisplayPayload = (
       );
     case "media":
       return isMediaAsset(value.asset);
+    case "agent-work":
+      return (
+        (value.state === "running" || value.state === "done") &&
+        isString(value.title) &&
+        isString(value.subtitle) &&
+        isFiniteNumber(value.total) &&
+        isFiniteNumber(value.completed) &&
+        isFiniteNumber(value.createdAt)
+      );
     default:
       return false;
   }
@@ -135,6 +144,7 @@ export const artifactPrimaryFilePath = (
           return null;
       }
     case "url":
+    case "agent-work":
       return null;
   }
 };
@@ -174,6 +184,8 @@ export const artifactTitle = (payload: MobileDisplayPayload): string => {
         case "text":
           return "Generated text";
       }
+    case "agent-work":
+      return payload.title;
   }
 };
 
@@ -221,6 +233,8 @@ export const artifactSubtitle = (payload: MobileDisplayPayload): string => {
         case "text":
           return "Text";
       }
+    case "agent-work":
+      return payload.subtitle;
   }
 };
 
@@ -249,6 +263,8 @@ export const artifactIconName = (payload: MobileDisplayPayload) => {
         default:
           return "file";
       }
+    case "agent-work":
+      return payload.state === "done" ? "check" : "cpu";
   }
 };
 

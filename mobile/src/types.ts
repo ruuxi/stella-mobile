@@ -55,6 +55,21 @@ export type MobileDisplayPayload =
       createdAt: number;
       prompt?: string;
       capability?: string;
+    }
+  | {
+      /**
+       * Inline "background work" card — work the computer kicked off in the
+       * background (the mobile companion to the desktop agent card). Built
+       * desktop-side from agent lifecycle events; not openable. State is
+       * sync-time (running → done flips on the next sync).
+       */
+      kind: "agent-work";
+      state: "running" | "done";
+      total: number;
+      completed: number;
+      title: string;
+      subtitle: string;
+      createdAt: number;
     };
 
 export type ChatArtifact = {

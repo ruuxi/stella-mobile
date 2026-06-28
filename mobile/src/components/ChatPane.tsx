@@ -43,6 +43,7 @@ import { GlassSurface, liquidGlassSupported } from "./glass";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
+import { AgentWorkCard } from "./AgentWorkCard";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
@@ -660,6 +661,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
   }
   const artifacts = item.artifacts ?? [];
   const hasText = item.text.trim().length > 0;
+  // Agent-work cards are non-interactive and always render; openable
+  // artifacts still require an `onOpenArtifact` handler.
+  const hasAgentWork = artifacts.some(
+    (artifact) => artifact.payload.kind === "agent-work",
+  );
+  const showArtifacts =
+    hasAgentWork || (Boolean(onOpenArtifact) && artifacts.length > 0);
   return (
     <View style={styles.assistantRow}>
       {hasText ? (
@@ -669,21 +677,29 @@ const ChatMessageRow = memo(function ChatMessageRow({
           isStreaming={isStreaming}
         />
       ) : null}
-      {onOpenArtifact && artifacts.length > 0 ? (
+      {showArtifacts ? (
         <View
           style={[
             styles.artifactGroup,
             hasText && styles.artifactGroupSpaced,
           ]}
         >
-          {artifacts.map((artifact) => (
-            <ArtifactCard
-              key={artifact.id}
-              artifact={artifact}
-              colors={colors}
-              onPress={onOpenArtifact}
-            />
-          ))}
+          {artifacts.map((artifact) =>
+            artifact.payload.kind === "agent-work" ? (
+              <AgentWorkCard
+                key={artifact.id}
+                payload={artifact.payload}
+                colors={colors}
+              />
+            ) : onOpenArtifact ? (
+              <ArtifactCard
+                key={artifact.id}
+                artifact={artifact}
+                colors={colors}
+                onPress={onOpenArtifact}
+              />
+            ) : null,
+          )}
         </View>
       ) : null}
       {item.stopped ? (

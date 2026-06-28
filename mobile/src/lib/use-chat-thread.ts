@@ -613,6 +613,10 @@ export function useChatThread(opts: {
     const out: ChatArtifact[] = [];
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       for (const artifact of messages[i].artifacts ?? []) {
+        // Agent-work cards are inline-chat only — not openable files, so they
+        // don't belong in the artifacts browser (tapping one would hit the
+        // viewer's "no preview" path).
+        if (artifact.payload.kind === "agent-work") continue;
         if (seen.has(artifact.id)) continue;
         seen.add(artifact.id);
         out.push(artifact);
