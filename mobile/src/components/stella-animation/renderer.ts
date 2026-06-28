@@ -18,18 +18,7 @@ export type StellaRenderer = {
   destroy: () => void;
 };
 
-const fract = (x: number) => x - Math.floor(x);
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
-const smoothstep01 = (e0: number, e1: number, x: number) => {
-  const t = clamp01((x - e0) / (e1 - e0));
-  return t * t * (3 - 2 * t);
-};
-
-const createAnimationUniforms = (
-  width: number,
-  height: number,
-  time: number,
-) => {
+const createAnimationUniforms = (time: number) => {
   const cycle = time * 0.15;
   const phase = cycle - Math.floor(cycle / 3) * 3;
   let w1 =
@@ -41,38 +30,7 @@ const createAnimationUniforms = (
   w2 /= total;
   w3 /= total;
 
-  const eyeAngle = -time * 2.5;
-  const drift1x = Math.cos(eyeAngle) * 1.1;
-  const drift1y = Math.sin(eyeAngle) * 1.1;
-  const et = time * 2.0;
-  const ep1 = Math.sin(et) * 0.5 + 0.5;
-  const ep2 = Math.sin(et + 2.094) * 0.5 + 0.5;
-  const ep3 = Math.sin(et + 4.188) * 0.5 + 0.5;
-  const epSum = ep1 + ep2 + ep3 || 1;
-  const drift2x = ((1 * ep1 + -0.5 * ep2 + -0.5 * ep3) / epSum) * 1.8;
-  const drift2y = ((0 * ep1 + 0.866 * ep2 + -0.866 * ep3) / epSum) * 1.8;
-  const drift3y = -Math.sin(time * 0.4) * 0.9;
-  const eyeDriftX = drift1x * w1 + drift2x * w2;
-  const eyeDriftY = drift1y * w1 + drift2y * w2 + drift3y * w3;
-
-  const blinkSlot = Math.floor(time / 0.8);
-  const blinkLocal = fract(time / 0.8);
-  const blinkHash = fract(Math.sin(blinkSlot * 91.7) * 43758.5453);
-  const doBlink = blinkHash >= 0.65 ? 1 : 0;
-  const bt = clamp01(blinkLocal / 0.1);
-  const blinkCurve = smoothstep01(0, 1, Math.abs(bt * 2 - 1));
-  let blink = 1 + (blinkCurve - 1) * doBlink;
-  const dblHash = fract(Math.sin(blinkSlot * 73.3) * 28461.7);
-  const doDouble = (dblHash >= 0.8 ? 1 : 0) * doBlink;
-  const bt2 = clamp01((blinkLocal - 0.15) / 0.1);
-  const dblCurve = smoothstep01(0, 1, Math.abs(bt2 * 2 - 1));
-  blink *= 1 + (dblCurve - 1) * doDouble;
-
-  const eyeUp = 2.5 / height;
-  const eyeOriginX = 0.5 + eyeDriftX / width;
-  const eyeOriginY = 0.5 - eyeUp + eyeDriftY / height;
-
-  return { w1, w2, w3, eyeOriginX, eyeOriginY, blink };
+  return { w1, w2, w3 };
 };
 
 export const initRenderer = (
@@ -142,8 +100,6 @@ export const initRenderer = (
   const uVoiceEnergy = gl.getUniformLocation(program, "u_voiceEnergy");
   const uAspect = gl.getUniformLocation(program, "u_aspect");
   const uPhases = gl.getUniformLocation(program, "u_phases");
-  const uEyeOrigin = gl.getUniformLocation(program, "u_eyeOrigin");
-  const uEyeBlink = gl.getUniformLocation(program, "u_eyeBlink");
 
   if (
     !uCanvasSize ||
@@ -207,7 +163,7 @@ export const initRenderer = (
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    const u = createAnimationUniforms(gridWidth, gridHeight, time);
+    const u = createAnimationUniforms(time);
 
     gl.uniform1f(uTime, time);
     gl.uniform1f(uBirth, birth);
@@ -218,8 +174,6 @@ export const initRenderer = (
       phasesArr[2] = u.w3;
       gl.uniform3fv(uPhases, phasesArr);
     }
-    if (uEyeOrigin) gl.uniform2f(uEyeOrigin, u.eyeOriginX, u.eyeOriginY);
-    if (uEyeBlink) gl.uniform1f(uEyeBlink, u.blink);
 
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
