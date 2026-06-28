@@ -603,7 +603,7 @@ function parseDesktopBridgeMessageRows(
         role,
         text,
         ...(requestId ? { requestId } : {}),
-        ...(timestamp !== undefined ? { timestamp } : {}),
+        ...(timestamp !== undefined ? { timestamp, createdAt: timestamp } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),
       };
     })

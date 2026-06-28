@@ -123,6 +123,14 @@ export function useChatThread(opts: {
   const syncCursorRef = useRef<string | null>(null);
   const syncConversationIdRef = useRef<string | null>(null);
   const didMountSyncRef = useRef(false);
+  // The in-flight desktop sync, shared so a send can await the same wake+pull
+  // instead of racing a second one (see `runDesktopSync`). Resolves with
+  // whether the desktop was unreachable so the send can skip a second wake.
+  const desktopSyncRef = useRef<Promise<{ offline: boolean }> | null>(null);
+  // Bumped whenever the paired computer changes or the surface unmounts, so an
+  // in-flight sync started for the previous computer can't persist its cursor
+  // or merge its transcript into the new one.
+  const syncGenerationRef = useRef(0);
   const drainQueueRef = useRef<(() => void) | null>(null);
   // The dispatch fn closes over `transport`; keep the latest in a ref so the
   // stable queue/drain machinery never dispatches against a stale destination.
@@ -169,18 +177,21 @@ export function useChatThread(opts: {
   );
 
   // ─── Desktop transcript sync ─────────────────────────────────────────────
-  // Once per surface landing (when idle), pull new desktop turns and merge
-  // them in. Merge-only: locally-streamed rows are never dropped.
+  // Coalesced wake + pull + merge. Concurrent callers (the landing sync and a
+  // send) share one in-flight run so the desktop is woken and the existing
+  // transcript reconciled exactly once, never twice racing each other. A send
+  // awaits this before it streams, giving a strict wake → sync → send order so
+  // a landing sync can't land its merge in the middle of an active turn.
   const desktopAccess = isDesktop ? transport.access : null;
-  useEffect(() => {
-    if (!desktopAccess) return;
-    if (didMountSyncRef.current) return;
-    if (!storageLoaded) return;
-    if (sending) return;
-
-    didMountSyncRef.current = true;
-    let cancelled = false;
-    void (async () => {
+  const desktopDeviceId = desktopAccess?.desktopDeviceId ?? null;
+  const runDesktopSync = useCallback((): Promise<{ offline: boolean }> => {
+    if (!desktopAccess) return Promise.resolve({ offline: false });
+    const existing = desktopSyncRef.current;
+    if (existing) return existing;
+    // Snapshot the generation so results from a now-stale computer (switched or
+    // unmounted mid-flight) are dropped instead of clobbering the current one.
+    const generation = syncGenerationRef.current;
+    const run = (async (): Promise<{ offline: boolean }> => {
       try {
         const expectedConversationId = syncConversationIdRef.current;
         const sinceCursor = syncCursorRef.current;
@@ -190,22 +201,49 @@ export function useChatThread(opts: {
           sinceCursor: expectedConversationId ? sinceCursor : null,
           maxMessages: HISTORY_MESSAGE_LIMIT,
         });
-        if (cancelled) return;
+        if (generation !== syncGenerationRef.current) return { offline: false };
         persistSyncState({
           conversationId: next.conversationId,
           cursor: next.cursor,
         });
         setMessages((current) => mergeMessagesById(current, next.messages));
-      } catch {
+        return { offline: false };
+      } catch (error) {
         // Best-effort: the device-status poll drives the connection badge, and
-        // the next landing retries the sync.
+        // the next send/landing retries the sync. Report a confirmed offline so
+        // the send can surface it without spending a second wake budget.
+        return { offline: error instanceof DesktopOfflineError };
+      } finally {
+        // Only release the shared handle if a newer run hasn't claimed it.
+        if (generation === syncGenerationRef.current) {
+          desktopSyncRef.current = null;
+        }
       }
     })();
+    desktopSyncRef.current = run;
+    return run;
+  }, [desktopAccess, persistSyncState]);
 
+  // Re-arm the landing sync and invalidate any in-flight one whenever the
+  // paired computer changes (or the surface unmounts), so the new computer
+  // syncs on landing and a stale sync never persists the old cursor or merges
+  // the old transcript. Declared before the landing effect so it re-arms first.
+  useEffect(() => {
+    didMountSyncRef.current = false;
+    desktopSyncRef.current = null;
     return () => {
-      cancelled = true;
+      syncGenerationRef.current += 1;
     };
-  }, [desktopAccess, persistSyncState, sending, storageLoaded]);
+  }, [desktopDeviceId, threadId]);
+
+  // Once per surface landing, pull new desktop turns and merge them in.
+  useEffect(() => {
+    if (!desktopAccess) return;
+    if (didMountSyncRef.current) return;
+    if (!storageLoaded) return;
+    didMountSyncRef.current = true;
+    void runDesktopSync();
+  }, [desktopAccess, runDesktopSync, storageLoaded]);
 
   const appendAssistantText = useCallback((replyId: string, chunk: string) => {
     setMessages((m) =>
@@ -329,6 +367,20 @@ export function useChatThread(opts: {
       let sawDelta = false;
 
       try {
+        // wake → sync → send: reconcile the existing transcript first (this
+        // also wakes the desktop) so the landing sync's merge can't interleave
+        // with this turn's stream. If that wake already proved the desktop is
+        // offline, surface it now rather than spending a second wake budget.
+        setWorkingStatus(WAKE_STATUS_COPY.connecting);
+        const synced = await runDesktopSync();
+        if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
+          activeDispatchRef.current = null;
+          setSending(false);
+          return;
+        }
+        if (synced.offline) {
+          throw new DesktopOfflineError();
+        }
         const result = await sendDesktopBridgeChat({
           access,
           message: item.text,
@@ -372,7 +424,10 @@ export function useChatThread(opts: {
           ),
         );
         // Reconcile with canonical desktop rows in the background so ids line
-        // up with future syncs.
+        // up with future syncs. Snapshot the sync generation so a reconcile that
+        // resolves after the paired computer/thread changed (or the surface
+        // unmounted) can't persist a stale cursor or merge the old transcript.
+        const reconcileGeneration = syncGenerationRef.current;
         void syncDesktopBridgeChatMessages({
           access,
           expectedConversationId: syncConversationIdRef.current,
@@ -383,6 +438,7 @@ export function useChatThread(opts: {
         })
           .then((delta) => {
             if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
+            if (reconcileGeneration !== syncGenerationRef.current) return;
             persistSyncState({
               conversationId: delta.conversationId,
               cursor: delta.cursor,
@@ -432,7 +488,7 @@ export function useChatThread(opts: {
         textSmoother.cancel();
       }
     },
-    [appendAssistantText, finishDispatch, persistSyncState],
+    [appendAssistantText, finishDispatch, persistSyncState, runDesktopSync],
   );
 
   // ─── Queue & dispatch ─────────────────────────────────────────────────────
@@ -451,7 +507,7 @@ export function useChatThread(opts: {
         ...m.map((msg) =>
           msg.id === item.userMessageId ? { ...msg, queued: false } : msg,
         ),
-        { id: replyId, role: "assistant" as const, text: "" },
+        { id: replyId, role: "assistant" as const, text: "", createdAt: Date.now() },
       ]);
 
       if (transport.kind === "desktop") {
@@ -479,6 +535,11 @@ export function useChatThread(opts: {
   }, [drainQueue]);
 
   const send = useCallback(() => {
+    // Don't dispatch until hydration has restored the persisted transcript and
+    // sync cursor: sending earlier lets the async load overwrite the optimistic
+    // bubble, and lets the landing sync fire mid-stream against a fresh cursor.
+    // The draft is left intact so the queued tap lands once we're loaded.
+    if (!storageLoaded) return;
     const text = draft.trim();
     if (!text && attachments.length === 0) return;
 
@@ -498,6 +559,7 @@ export function useChatThread(opts: {
       id: userMessageId,
       role: "user",
       text: displayText,
+      createdAt: Date.now(),
       hasImage: assets.length > 0,
       ...(thumbs.length > 0 ? { thumbnailUris: thumbs } : {}),
       ...(sending ? { queued: true } : {}),
@@ -521,7 +583,7 @@ export function useChatThread(opts: {
       setSending(true);
       void dispatch(item);
     }
-  }, [attachments, dispatch, draft, sending]);
+  }, [attachments, dispatch, draft, sending, storageLoaded]);
 
   const stop = useCallback(() => {
     // Drop queued follow-ups first so the in-flight finally-handler doesn't

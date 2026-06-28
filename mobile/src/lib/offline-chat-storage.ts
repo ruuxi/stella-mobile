@@ -50,6 +50,9 @@ function parseRow(row: unknown): ChatMessage | null {
     ...(typeof o.canonicalId === "string" && o.canonicalId.trim()
       ? { canonicalId: o.canonicalId.trim() }
       : {}),
+    ...(typeof o.createdAt === "number" && Number.isFinite(o.createdAt)
+      ? { createdAt: o.createdAt }
+      : {}),
     role: o.role,
     text: o.text,
     ...(artifacts.length > 0 ? { artifacts } : {}),

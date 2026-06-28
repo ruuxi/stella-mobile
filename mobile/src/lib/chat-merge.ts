@@ -1,10 +1,43 @@
 import type { ChatMessage } from "../types";
 
 /**
- * Merge canonical desktop messages into the local transcript by id without
- * ever discarding local-only rows (e.g. cloud-answered turns). Rows the
- * transcript already reconciled keep their local id (`canonicalId` links
- * them to the desktop row) so streaming bubbles never remount.
+ * Order the transcript by `createdAt` so a synced row lands in its true
+ * chronological slot rather than wherever it happened to be appended. The sort
+ * is stable (original index breaks ties) and tolerant of legacy rows that
+ * predate `createdAt`: a missing timestamp carries forward from the previous
+ * row, keeping un-stamped history anchored to its neighbours instead of
+ * collapsing to the top.
+ */
+const sortByCreatedAt = (messages: ChatMessage[]): ChatMessage[] => {
+  let lastSeen = 0;
+  const keyed = messages.map((message, index) => {
+    const createdAt =
+      typeof message.createdAt === "number" && Number.isFinite(message.createdAt)
+        ? message.createdAt
+        : lastSeen;
+    lastSeen = createdAt;
+    return { message, index, createdAt };
+  });
+  keyed.sort((a, b) =>
+    a.createdAt === b.createdAt ? a.index - b.index : a.createdAt - b.createdAt,
+  );
+  return keyed.map((entry) => entry.message);
+};
+
+/**
+ * Merge canonical desktop messages into the local transcript by id without ever
+ * discarding local-only rows (e.g. cloud-answered turns). Rows the transcript
+ * already reconciled keep their local id (`canonicalId` links them to the
+ * desktop row) so streaming bubbles never remount.
+ *
+ * Matching is strictly by id / `canonicalId`. Content (role+text) is
+ * deliberately NOT used to link rows here: this generic sync can't tell an
+ * unsent optimistic bubble apart from an older message that merely repeats the
+ * same text (e.g. a second "ok"), so a text match could overwrite the bubble
+ * with stale history and move it by an old timestamp. Precise optimistic ↔
+ * canonical linking for a just-sent turn is `reconcileSentDesktopTurn`'s job,
+ * where the specific row ids are known. The result is sorted by `createdAt` so
+ * freshly-synced history slots in chronologically instead of at the tail.
  */
 export const mergeMessagesById = (
   current: ChatMessage[],
@@ -24,12 +57,24 @@ export const mergeMessagesById = (
     }
     byId.set(
       id,
-      existing ? { ...message, id, canonicalId: message.id } : message,
+      existing
+        ? {
+            ...message,
+            id,
+            canonicalId: message.id,
+            // The canonical desktop row drops attachment thumbnails — keep any
+            // the local bubble already has so it doesn't lose its images.
+            ...(existing.thumbnailUris?.length && !message.thumbnailUris?.length
+              ? { thumbnailUris: existing.thumbnailUris, hasImage: true }
+              : {}),
+          }
+        : message,
     );
   }
-  return order
+  const merged = order
     .map((id) => byId.get(id))
     .filter((message): message is ChatMessage => Boolean(message));
+  return sortByCreatedAt(merged);
 };
 
 /**

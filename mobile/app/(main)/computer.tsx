@@ -252,7 +252,8 @@ function ComputerChatSurface({
 
   const canSubmit =
     (thread.draft.trim().length > 0 || thread.attachments.length > 0) &&
-    !offline;
+    !offline &&
+    thread.storageLoaded;
 
   return (
     <View style={styles.screen}>

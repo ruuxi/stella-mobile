@@ -70,6 +70,14 @@ export type ChatMessage = {
    * for the just-streamed row so sync does not remount the bubble.
    */
   canonicalId?: string;
+  /**
+   * Creation time (ms epoch) used to order the transcript. Local rows stamp
+   * this at send time; desktop rows carry the canonical desktop `timestamp`.
+   * Sync merges sort by this so synced history lands in its true chronological
+   * slot instead of being appended to the tail. May be absent on legacy rows
+   * persisted before this field existed.
+   */
+  createdAt?: number;
   role: "assistant" | "user";
   text: string;
   artifacts?: ChatArtifact[];
