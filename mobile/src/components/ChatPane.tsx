@@ -462,15 +462,27 @@ function useChatScroll(listTrailingSlackPx: number) {
 // Animated message wrapper — mirrors desktop stream-fade-blur-in.
 // ---------------------------------------------------------------------------
 
+// Message ids whose entrance animation has already played. LegendList recycles
+// row views, so when a tall row reflows the viewport — e.g. an inline artifact
+// card lands and the assistant row jumps in height — the list can remount
+// already-visible rows onto fresh containers. Without this latch every such row
+// would replay its fade-in at once, which reads as the whole chat "reloading".
+// Each message animates in exactly once; a recycle or scroll-back mounts it at
+// its resting state instead.
+const fadedInMessageIds = new Set<string>();
+
 function FadeInMessage({
+  messageId,
   children,
   onLayout,
 }: {
+  messageId: string;
   children: ReactNode;
   onLayout?: (event: LayoutChangeEvent) => void;
 }) {
-  const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(5)).current;
+  const alreadyFaded = fadedInMessageIds.has(messageId);
+  const opacity = useRef(new Animated.Value(alreadyFaded ? 1 : 0)).current;
+  const translateY = useRef(new Animated.Value(alreadyFaded ? 0 : 5)).current;
 
   const animatedStyle = useMemo(
     () => ({ opacity, transform: [{ translateY }] }),
@@ -478,6 +490,8 @@ function FadeInMessage({
   );
 
   useEffect(() => {
+    if (fadedInMessageIds.has(messageId)) return;
+    fadedInMessageIds.add(messageId);
     Animated.parallel([
       Animated.timing(opacity, {
         toValue: 1,
@@ -492,7 +506,7 @@ function FadeInMessage({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [opacity, translateY]);
+  }, [messageId, opacity, translateY]);
 
   return (
     <Animated.View onLayout={onLayout} style={animatedStyle}>
@@ -1906,6 +1920,7 @@ export function ChatPane({
       return (
         <FadeInMessage
           key={item.id}
+          messageId={item.id}
           onLayout={
             isStreamingAssistant ? scroll.onStreamingAssistantLayout : undefined
           }
