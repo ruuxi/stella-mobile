@@ -199,6 +199,8 @@ function useChatScroll(listTrailingSlackPx: number) {
   const streamingAssistantHeightRef = useRef(0);
   /** Content height before the next assistant-driven layout pass. */
   const assistantLayoutBaselineRef = useRef<number | null>(null);
+  /** True while the user's finger is actively dragging the list. */
+  const isDraggingRef = useRef(false);
 
   const stopFollowLoop = useCallback(() => {
     if (followRafRef.current) {
@@ -229,9 +231,12 @@ function useChatScroll(listTrailingSlackPx: number) {
 
       // Re-arm the follow latch when the user returns to the true tail. The
       // wider near-bottom band can still follow while armed, but it should not
-      // re-enable follow after an intentional scrollback.
+      // re-enable follow after an intentional scrollback. Never re-arm while a
+      // drag is in flight — otherwise the first few pixels of an upward drag
+      // (still inside the at-bottom band) re-engage follow and the next
+      // streaming layout yanks the user straight back down.
       if (distFromBottom <= atBottomLimit) {
-        followArmedRef.current = true;
+        if (!isDraggingRef.current) followArmedRef.current = true;
       } else if (
         distFromBottom > nearBottomLimit &&
         followTargetOffsetRef.current === null &&
@@ -258,6 +263,22 @@ function useChatScroll(listTrailingSlackPx: number) {
     followArmedRef.current = false;
     stopFollowLoop();
   }, [stopFollowLoop]);
+
+  // The user grabbed the list — drop follow immediately and remember the drag
+  // is live so `onScroll` won't re-arm until the gesture settles.
+  const onScrollBeginDrag = useCallback(() => {
+    isDraggingRef.current = true;
+    releaseFollow();
+  }, [releaseFollow]);
+
+  // Gesture settled (lift, or end of momentum). Clear the drag flag and re-arm
+  // only if the user came to rest at the true tail.
+  const onScrollSettle = useCallback(() => {
+    isDraggingRef.current = false;
+    const { offsetY, contentHeight, layoutHeight } = metricsRef.current;
+    const distFromBottom = Math.max(0, contentHeight - offsetY - layoutHeight);
+    if (distFromBottom <= atBottomLimit) followArmedRef.current = true;
+  }, [atBottomLimit]);
 
   /** Call when assistant text grows, before layout measures the new height. */
   const prepareAssistantLayoutFollow = useCallback(() => {
@@ -430,7 +451,8 @@ function useChatScroll(listTrailingSlackPx: number) {
     scrollToBottom,
     resetAssistantAutoScroll,
     prepareAssistantLayoutFollow,
-    releaseFollow,
+    onScrollBeginDrag,
+    onScrollSettle,
     nudgeAfterSend,
     awayFromBottom,
   };
@@ -2020,7 +2042,9 @@ export function ChatPane({
               getItemType={getItemType}
               ItemSeparatorComponent={renderSeparator}
               onScroll={handleListScroll}
-              onScrollBeginDrag={scroll.releaseFollow}
+              onScrollBeginDrag={scroll.onScrollBeginDrag}
+              onScrollEndDrag={scroll.onScrollSettle}
+              onMomentumScrollEnd={scroll.onScrollSettle}
               onContentSizeChange={scroll.onListContentSizeChange}
               scrollEventThrottle={16}
               showsVerticalScrollIndicator={false}
@@ -2039,10 +2063,24 @@ export function ChatPane({
               // user is already near the bottom. Scoped to data changes so it
               // doesn't fight the custom streaming-follow target updates,
               // which own item-layout/size growth.
-              maintainScrollAtEnd={{
-                animated: false,
-                on: { dataChange: true, itemLayout: false, layout: false },
-              }}
+              //
+              // While streaming, every token mutates the data array, so a
+              // dataChange-pinned tail would fire `scrollToEnd` on each token —
+              // overriding the custom "freeze once the message reaches the top"
+              // target and snapping the user back down whenever they try to
+              // scroll up. The custom follow loop already keeps the tail in view
+              // during streaming, so disable the built-in pin for that window.
+              maintainScrollAtEnd={
+                streaming
+                  ? {
+                      animated: false,
+                      on: { dataChange: false, itemLayout: false, layout: false },
+                    }
+                  : {
+                      animated: false,
+                      on: { dataChange: true, itemLayout: false, layout: false },
+                    }
+              }
             />
             {/* Top taper — fades the list into the surface at the top edge so
                 messages scrolling under the top bar dissolve instead of
