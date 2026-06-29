@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Stack, usePathname, useRouter } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -56,6 +56,7 @@ function AuthenticatedLayout() {
   const pathname = usePathname();
   const [guestReady, setGuestReady] = useState(false);
   const [initialMainHref, setInitialMainHref] = useState<string | null>(null);
+  const splashHiddenRef = useRef(false);
 
   useEffect(() => {
     void Promise.all([
@@ -139,6 +140,27 @@ function AuthenticatedLayout() {
     }
   }, [pathname, router, session.data, session.isPending, guestReady, initialMainHref]);
 
+  // Hold the native splash until auth + local startup state have resolved, so a
+  // returning user goes straight from splash to their app — no flash of the
+  // "Checking your session" / login screen while `useSession()` does its first
+  // network round-trip. This runs after the routing effect above, and the
+  // double `requestAnimationFrame` lets the chosen destination paint underneath
+  // the splash before it lifts.
+  useEffect(() => {
+    if (splashHiddenRef.current) {
+      return;
+    }
+    if (session.isPending || !guestReady || !initialMainHref) {
+      return;
+    }
+    splashHiddenRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        void SplashScreen.hideAsync();
+      });
+    });
+  }, [session.isPending, guestReady, initialMainHref]);
+
   return (
     <>
       <ShareIntentHandler />
@@ -149,7 +171,14 @@ function AuthenticatedLayout() {
 
 function AppLayout() {
   if (!hasMobileConfig) {
-    return <RootStack />;
+    // No auth gate on this path, so nothing else lifts the splash — drop it
+    // once the theme has painted.
+    return (
+      <>
+        <HideSplashWhenThemed />
+        <RootStack />
+      </>
+    );
   }
 
   return <ConvexBoundLayout />;
@@ -206,7 +235,6 @@ export default function RootLayout() {
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
           <ThemeProvider>
-            <HideSplashWhenThemed />
             <ChatSearchProvider>
               <AppLayout />
             </ChatSearchProvider>
