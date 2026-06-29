@@ -1,11 +1,11 @@
 import { useMemo } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { Icon } from "./Icon";
+import { ShimmerText } from "./ShimmerText";
 import type { MobileDisplayPayload } from "../types";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import type { Colors } from "../theme/colors";
 import { fonts } from "../theme/fonts";
-import { fadeHex } from "../theme/oklch";
 
 type AgentWorkPayload = Extract<MobileDisplayPayload, { kind: "agent-work" }>;
 
@@ -14,11 +14,16 @@ type AgentWorkCardProps = {
   colors: Colors;
 };
 
+/** A touch quicker than the base shimmer so the in-progress state reads as
+ *  lively — mirrors the desktop `BackgroundWorkCard` title sweep. */
+const TITLE_SHIMMER_MS = 1900;
+
 /**
- * Inline "background work" card — work the computer kicked off in the
- * background. Non-interactive (no detail view to open): it just reports that
- * Stella is working / has finished. State is sync-time, so a running card
- * flips to "Finished" on the next sync.
+ * Inline "background work" marker — work the computer kicked off in the
+ * background. Mirrors the desktop `BackgroundWorkCard`: a quiet, elevated row
+ * (not an openable artifact card) whose title shimmers while running and
+ * settles to a check + status once everything wraps up. State is sync-time, so
+ * a running row flips to its finished copy on the next sync.
  */
 export function AgentWorkCard({ payload, colors }: AgentWorkCardProps) {
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -26,25 +31,24 @@ export function AgentWorkCard({ payload, colors }: AgentWorkCardProps) {
 
   return (
     <View
-      style={styles.card}
+      style={styles.row}
       accessibilityRole="text"
       accessibilityLabel={`${payload.title}. ${payload.subtitle}`}
     >
-      <View style={styles.iconWrap}>
-        {running ? (
-          <ActivityIndicator size="small" color={colors.text} />
-        ) : (
-          <Icon name="check" size={18} color={colors.text} />
-        )}
-      </View>
-      <View style={styles.textWrap}>
-        <Text
-          style={styles.title}
-          numberOfLines={1}
-          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
-        >
-          {payload.title}
-        </Text>
+      {!running ? (
+        <View style={styles.glyph}>
+          <Icon name="check" size={16} color={colors.text} />
+        </View>
+      ) : null}
+      <View style={styles.text}>
+        <ShimmerText
+          text={payload.title}
+          active={running}
+          color={colors.text}
+          textStyle={styles.title}
+          durationMs={TITLE_SHIMMER_MS}
+          dimAlpha={0.32}
+        />
         <Text
           style={styles.subtitle}
           numberOfLines={1}
@@ -59,44 +63,45 @@ export function AgentWorkCard({ payload, colors }: AgentWorkCardProps) {
 
 const makeStyles = (colors: Colors) =>
   StyleSheet.create({
-    card: {
+    row: {
       alignItems: "center",
-      alignSelf: "stretch",
-      backgroundColor: fadeHex(colors.card, 0.8),
-      borderColor: colors.border,
-      borderRadius: 14,
-      borderWidth: StyleSheet.hairlineWidth,
+      alignSelf: "flex-start",
+      maxWidth: "100%",
       flexDirection: "row",
       gap: 10,
-      minHeight: 58,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-    },
-    iconWrap: {
-      alignItems: "center",
-      backgroundColor: colors.surface,
-      borderColor: colors.border,
-      borderRadius: 10,
+      minHeight: 44,
+      borderRadius: 12,
       borderWidth: StyleSheet.hairlineWidth,
-      height: 36,
-      justifyContent: "center",
-      width: 36,
+      borderColor: colors.border,
+      backgroundColor: colors.panel,
+      paddingTop: 8,
+      paddingBottom: 8,
+      paddingLeft: 11,
+      paddingRight: 14,
     },
-    textWrap: {
-      flex: 1,
+    glyph: {
+      width: 22,
+      height: 22,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    text: {
+      flexShrink: 1,
       minWidth: 0,
     },
     title: {
       color: colors.text,
-      fontFamily: fonts.sans.semiBold,
+      fontFamily: fonts.sans.medium,
       fontSize: 14,
+      lineHeight: 19,
       letterSpacing: -0.2,
     },
     subtitle: {
       color: colors.textMuted,
       fontFamily: fonts.sans.regular,
-      fontSize: 12,
-      letterSpacing: -0.1,
-      marginTop: 2,
+      fontSize: 11.5,
+      letterSpacing: 0.1,
+      marginTop: 1,
+      fontVariant: ["tabular-nums"],
     },
   });

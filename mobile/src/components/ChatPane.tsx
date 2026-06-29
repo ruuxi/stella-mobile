@@ -2180,6 +2180,14 @@ export function ChatPane({
   );
   const getItemType = useCallback((item: ChatMessage) => item.role, []);
 
+  // The working indicator rides at the tail of the chat (desktop-style) instead
+  // of floating above the composer. It collapses to nothing when idle, so it
+  // only takes space — right under the last message — while a reply is working.
+  const listFooter = useMemo(
+    () => <WorkingIndicator active={streaming} status={workingStatus} />,
+    [streaming, workingStatus],
+  );
+
   // Search shows a separate results menu that overlays the chat (the chat
   // itself is never filtered). Matches are listed newest-first; tapping one
   // jumps to that message in the conversation.
@@ -2286,6 +2294,7 @@ export function ChatPane({
               keyExtractor={keyExtractor}
               getItemType={getItemType}
               ItemSeparatorComponent={renderSeparator}
+              ListFooterComponent={listFooter}
               onScroll={handleListScroll}
               onScrollBeginDrag={scroll.onScrollBeginDrag}
               onScrollEndDrag={scroll.onScrollSettle}
@@ -2494,7 +2503,6 @@ export function ChatPane({
         onLayout={onFooterLayout}
         pointerEvents={searchOpen ? "none" : "box-none"}
       >
-        <WorkingIndicator active={streaming} status={workingStatus} />
         {offline ? (
           <View style={styles.offlineNotice} pointerEvents="none">
             <Icon name="wifi-off" size={13} color={colors.textMuted} />

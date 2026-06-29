@@ -353,7 +353,10 @@ export const WorkingIndicator = memo(function WorkingIndicator({
   );
 
   return (
-    <View style={styles.slot} pointerEvents="none">
+    <View
+      style={[styles.slot, !renderShell && styles.slotCollapsed]}
+      pointerEvents="none"
+    >
       {renderShell ? (
         <Animated.View style={[styles.row, shellStyle]} collapsable={false}>
           <View
@@ -392,6 +395,11 @@ const makeStyles = (colors: Colors) =>
       height: WORKING_INDICATOR_SLOT_HEIGHT,
       flexShrink: 0,
       overflow: "visible",
+    },
+    // Inline at the chat tail the slot must take no space once the indicator
+    // has fully left, otherwise it leaves a permanent gap above the composer.
+    slotCollapsed: {
+      height: 0,
     },
     row: {
       alignItems: "center",
