@@ -62,6 +62,12 @@ export const mergeMessagesById = (
             ...message,
             id,
             canonicalId: message.id,
+            // Keep the timestamp the row was first shown with. Canonical rows
+            // carry the *desktop* clock; adopting it for a row that's already
+            // on screen lets the re-sort below yank it out of place when the
+            // two devices' clocks disagree. New rows (no `existing`) still slot
+            // by their canonical time.
+            createdAt: existing.createdAt ?? message.createdAt,
             // The canonical desktop row drops attachment thumbnails — keep any
             // the local bubble already has so it doesn't lose its images.
             ...(existing.thumbnailUris?.length && !message.thumbnailUris?.length
@@ -110,6 +116,10 @@ export const reconcileSentDesktopTurn = ({
         ...canonicalUser,
         id: message.id,
         canonicalId: canonicalUser.id,
+        // Anchor to the optimistic send time so the just-sent turn keeps the
+        // position it streamed into, rather than re-sorting onto the desktop
+        // clock (which can jump it above earlier messages mid-render).
+        createdAt: message.createdAt ?? canonicalUser.createdAt,
         // The canonical desktop row drops attachment thumbnails — keep the
         // ones the user just attached so the bubble doesn't lose its images.
         ...(message.thumbnailUris?.length
@@ -123,6 +133,8 @@ export const reconcileSentDesktopTurn = ({
         ...canonicalAssistant,
         id: message.id,
         canonicalId: canonicalAssistant.id,
+        // Keep the reply pinned where it streamed in; see the user row above.
+        createdAt: message.createdAt ?? canonicalAssistant.createdAt,
       };
     }
     return message;
