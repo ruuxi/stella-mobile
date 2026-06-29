@@ -3,7 +3,10 @@
  * (`desktop/src/features/dictation/components/DictationRecordingBar.tsx`).
  * Lays out as flex children of the composer pill/expanded form:
  *
- *   [waveform — flex 1]   [0:24]   [X]   [✓]
+ *   [waveform — flex 1]   [0:24]   [X]   [✓]   [↑]
+ *
+ * The trailing send (↑) is optional: when `onSend` is given it stops dictation
+ * and, once the transcript lands, auto-submits the message in one tap.
  *
  * Renders the waveform with a stack of <View>s rather than canvas so we stay
  * inside RN's native render path.
@@ -26,6 +29,8 @@ type Props = {
   elapsedMs: number;
   onCancel: () => void;
   onConfirm: () => void;
+  /** When provided, stop dictation and auto-send once the transcript lands. */
+  onSend?: () => void;
 };
 
 export const DictationRecordingBar = memo(function DictationRecordingBar({
@@ -33,6 +38,7 @@ export const DictationRecordingBar = memo(function DictationRecordingBar({
   elapsedMs,
   onCancel,
   onConfirm,
+  onSend,
 }: Props) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -62,6 +68,21 @@ export const DictationRecordingBar = memo(function DictationRecordingBar({
       >
         <Icon name="check" size={16} color={colors.text} weight="semibold" />
       </Pressable>
+      {onSend ? (
+        <Pressable
+          onPress={onSend}
+          accessibilityLabel="Stop dictation and send"
+          hitSlop={6}
+          style={styles.sendControl}
+        >
+          <Icon
+            name="arrow-up"
+            size={15}
+            color={colors.accentForeground}
+            weight="heavy"
+          />
+        </Pressable>
+      ) : null}
     </>
   );
 });
@@ -140,5 +161,15 @@ const makeStyles = (colors: ColorMap) =>
       justifyContent: "center",
       width: 26,
       height: 26,
+    },
+    sendControl: {
+      flexShrink: 0,
+      alignItems: "center",
+      justifyContent: "center",
+      width: 28,
+      height: 28,
+      marginLeft: 2,
+      borderRadius: 14,
+      backgroundColor: colors.accent,
     },
   });

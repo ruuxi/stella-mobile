@@ -113,6 +113,14 @@ const SCROLL_AWAY_FROM_BOTTOM_BASE_PX = 96;
 const SCROLL_AT_BOTTOM_THRESHOLD = 8;
 /** Small upward nudge after send so the user bubble clears room for the reply. */
 const POST_SEND_NUDGE_PX = 128;
+/**
+ * Quiet window after the footer stops shrinking before we commit the smaller
+ * height to the list inset. A collapse animation emits a burst of intermediate
+ * `onLayout` heights; committing each one re-renders the list padding and
+ * re-targets the scroll-follow math every frame. Slightly longer than a 350ms
+ * spring's tail so we settle on the resting height, not a mid-animation one.
+ */
+const FOOTER_SHRINK_SETTLE_MS = 140;
 /** Native animation guard so stream-follow lag is not mistaken for scrollback. */
 const FOLLOW_NATIVE_ANIMATION_GUARD_MS = 320;
 const FOLLOW_HARD_SNAP_PX = 240;
@@ -1698,6 +1706,42 @@ export function ChatPane({
   const [footerHeight, setFooterHeight] = useState(0);
   const listTrailingSlackPx = EDGE_FADE + footerHeight;
 
+  // The footer (working indicator + composer) re-measures on every frame of any
+  // layout animation it runs. Each measurement re-renders the list padding and
+  // nudges the scroll-follow target, so tracking every intermediate frame turns
+  // a composer collapse into churn at the bottom of the screen. Grow the inset
+  // immediately — too little reserved space lets the composer overlap the last
+  // message — but defer a shrink until the animation settles, since extra slack
+  // for a beat is invisible.
+  const footerShrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
+    const h = Math.round(e.nativeEvent.layout.height);
+    if (footerShrinkTimerRef.current) {
+      clearTimeout(footerShrinkTimerRef.current);
+      footerShrinkTimerRef.current = null;
+    }
+    setFooterHeight((prev) => {
+      if (h > prev) return h;
+      if (h < prev) {
+        footerShrinkTimerRef.current = setTimeout(() => {
+          footerShrinkTimerRef.current = null;
+          setFooterHeight(h);
+        }, FOOTER_SHRINK_SETTLE_MS);
+      }
+      return prev;
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (footerShrinkTimerRef.current) {
+        clearTimeout(footerShrinkTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const assistantTextLenRef = useRef(0);
   const assistantIdRef = useRef<string | null>(null);
   const scroll = useChatScroll(listTrailingSlackPx);
@@ -1828,13 +1872,22 @@ export function ChatPane({
   const handleContentSizeChange = useCallback(
     (e: { nativeEvent: { contentSize: { height: number } } }) => {
       if (expanded) return;
+      // Ignore measurements once the draft is empty. On send the draft clears
+      // and the collapse effect drops us back to the pill, but the native
+      // TextInput can still emit one more `onContentSizeChange` carrying the
+      // *old* tall height before it renders the cleared value. Acting on that
+      // would re-expand an empty composer, the collapse effect would collapse
+      // it again, and the two LayoutAnimation springs ping-pong — the composer
+      // (and the working indicator stacked above it) shake violently. An empty
+      // composer is never expanded, so there is nothing to grow for here.
+      if (draft.length === 0) return;
       const h = e.nativeEvent.contentSize.height;
       if (h > EXPAND_THRESHOLD) {
         LayoutAnimation.configureNext(LAYOUT_SPRING);
         setExpanded(true);
       }
     },
-    [expanded],
+    [expanded, draft],
   );
 
   const submit = useCallback(() => {
@@ -1857,10 +1910,18 @@ export function ChatPane({
     draftRef.current = draft;
   }, [draft]);
 
+  // Auto-send-after-dictation coordination (see `stopAndSendVoice` below).
+  // When a voice-send is armed we stash the exact draft the transcript produces
+  // so the send effect can wait for the draft state to actually reflect it,
+  // rather than racing the (separately-committed) status → idle update.
+  const pendingVoiceSendRef = useRef(false);
+  const voiceSendTargetRef = useRef<string | null>(null);
+
   const appendTranscript = useCallback(
     (text: string) => {
       const trimmedPrev = draftRef.current.trimEnd();
       const next = trimmedPrev ? `${trimmedPrev} ${text}` : text;
+      if (pendingVoiceSendRef.current) voiceSendTargetRef.current = next;
       onChangeDraft(next);
     },
     [onChangeDraft],
@@ -1878,6 +1939,35 @@ export function ChatPane({
     if (dictation.status === "idle") tapLight();
     await dictation.toggle();
   }, [dictation]);
+
+  // "Stop dictation and send": stop recording, then auto-submit once the
+  // transcript has landed in the draft. `dictation.stop()` resolves after the
+  // round-trip, but `onTranscript` updates the draft through the parent, so we
+  // can't read it back synchronously here. Arm a flag and let the effect below
+  // fire submit on the render where the transcript has committed and dictation
+  // has returned to idle.
+  const stopAndSendVoice = useCallback(() => {
+    pendingVoiceSendRef.current = true;
+    voiceSendTargetRef.current = null;
+    void dictation.stop();
+  }, [dictation]);
+
+  useEffect(() => {
+    if (!pendingVoiceSendRef.current) return;
+    // Wait until transcription has fully finished (idle), not just stopped.
+    if (dictation.status !== "idle") return;
+    // If a transcript landed, hold off until the draft state actually reflects
+    // it — `appendTranscript` and the status update can commit separately.
+    const target = voiceSendTargetRef.current;
+    if (target !== null && draft !== target) return;
+    pendingVoiceSendRef.current = false;
+    voiceSendTargetRef.current = null;
+    // A too-short clip or failed transcription leaves nothing new to send;
+    // don't fire on an empty composer.
+    if (draft.trim().length > 0 || (attachments?.length ?? 0) > 0) {
+      submit();
+    }
+  }, [dictation.status, draft, attachments, submit]);
 
   const pickImage = useCallback(async () => {
     if (!enableAttachments || !onChangeAttachments) return;
@@ -2416,7 +2506,7 @@ export function ChatPane({
           { paddingBottom: keyboardHeight },
           searchOpen && styles.hiddenFooter,
         ]}
-        onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}
+        onLayout={onFooterLayout}
         pointerEvents={searchOpen ? "none" : "box-none"}
       >
         <WorkingIndicator active={streaming} status={workingStatus} />
@@ -2478,6 +2568,7 @@ export function ChatPane({
                   elapsedMs={dictation.elapsedMs}
                   onCancel={() => void dictation.cancel()}
                   onConfirm={() => void dictation.stop()}
+                  onSend={stopAndSendVoice}
                 />
               </View>
             ) : (
@@ -2620,6 +2711,7 @@ export function ChatPane({
                       elapsedMs={dictation.elapsedMs}
                       onCancel={() => void dictation.cancel()}
                       onConfirm={() => void dictation.stop()}
+                      onSend={stopAndSendVoice}
                     />
                   </View>
                 ) : null}
