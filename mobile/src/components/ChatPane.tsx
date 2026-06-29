@@ -44,6 +44,9 @@ import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AppBackdrop, TOP_BAR_BAR_HEIGHT } from "./AppBackdrop";
 import { ArtifactCard } from "./ArtifactCard";
 import { AgentWorkCard } from "./AgentWorkCard";
+import { ToolActivityTrace } from "./ToolActivityTrace";
+import { ActivityPill, ActivityTray } from "./ActivityPill";
+import { deriveToolActivity } from "../lib/tool-activity";
 import { DictationRecordingBar } from "./DictationRecordingBar";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
@@ -62,7 +65,7 @@ import { type Colors } from "../theme/colors";
 import { useColors } from "../theme/theme-context";
 import { fadeHex } from "../theme/oklch";
 import { fonts } from "../theme/fonts";
-import type { ChatArtifact, ChatMessage } from "../types";
+import type { ChatArtifact, ChatMessage, MobileTask } from "../types";
 
 // Required for LayoutAnimation on Android.
 if (
@@ -853,6 +856,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
   );
   const showArtifacts =
     hasAgentWork || (Boolean(onOpenArtifact) && artifacts.length > 0);
+  const toolActivity = item.toolSteps
+    ? deriveToolActivity(item.toolSteps)
+    : undefined;
   return (
     <View style={styles.assistantRow}>
       {hasText ? (
@@ -861,6 +867,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
           colors={colors}
           isStreaming={isStreaming}
         />
+      ) : null}
+      {toolActivity ? (
+        <ToolActivityTrace group={toolActivity} colors={colors} />
       ) : null}
       {showArtifacts ? (
         <View
@@ -1652,6 +1661,12 @@ export type ChatPaneProps = {
 
   /** Opens a desktop artifact linked from an assistant message. */
   onOpenArtifact?: (artifact: ChatArtifact) => void;
+
+  /**
+   * Background tasks for the activity pill + tray above the composer. When
+   * non-empty, the pill appears and opens the tray. The cloud chat omits it.
+   */
+  activityTasks?: MobileTask[];
 };
 
 export function ChatPane({
@@ -1675,6 +1690,7 @@ export function ChatPane({
   dictationAnonymous,
   dictationHeaders,
   onOpenArtifact,
+  activityTasks,
 }: ChatPaneProps) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -2110,6 +2126,8 @@ export function ChatPane({
     null,
   );
   const dismissMessageMenu = useCallback(() => setMessageMenu(null), []);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const hasActivity = (activityTasks?.length ?? 0) > 0;
   // Only user messages open this menu now \u2014 assistant messages carry their
   // actions inline (copy / read aloud / share) under the bubble, so the menu
   // just needs copy + share. Read-aloud lives only on the assistant inline row.
@@ -2514,6 +2532,15 @@ export function ChatPane({
             </Text>
           </View>
         ) : null}
+        {hasActivity ? (
+          <View style={styles.activityRow}>
+            <ActivityPill
+              tasks={activityTasks ?? []}
+              colors={colors}
+              onPress={() => setActivityOpen(true)}
+            />
+          </View>
+        ) : null}
         <View
           style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}
         >
@@ -2728,6 +2755,12 @@ export function ChatPane({
         onDismiss={dismissMessageMenu}
         colors={colors}
         containerRef={rootRef}
+      />
+      <ActivityTray
+        visible={activityOpen}
+        tasks={activityTasks ?? []}
+        colors={colors}
+        onClose={() => setActivityOpen(false)}
       />
     </View>
   );
@@ -2950,6 +2983,11 @@ const makeStyles = (colors: Colors) =>
       fontFamily: fonts.sans.medium,
       fontSize: 12,
       letterSpacing: -0.1,
+    },
+    activityRow: {
+      alignItems: "flex-start",
+      paddingHorizontal: 16,
+      paddingBottom: 6,
     },
     userText: {
       color: colors.text,

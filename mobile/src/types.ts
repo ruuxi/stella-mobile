@@ -1,3 +1,5 @@
+import type { ToolStep } from "./lib/tool-activity";
+
 export type MobileDisplayFileArtifactKind =
   | "office-document"
   | "office-spreadsheet"
@@ -96,6 +98,17 @@ export type ChatMessage = {
   role: "assistant" | "user";
   text: string;
   artifacts?: ChatArtifact[];
+  /**
+   * Assistant message: settled tool calls for this turn (oldest first), folded
+   * into the inline tool-activity trace. Paired desktop-side and sent over the
+   * bridge; see {@link import("./lib/tool-activity").deriveToolActivity}.
+   */
+  toolSteps?: ToolStep[];
+  /**
+   * Background tasks spawned by this turn. Collected conversation-wide into the
+   * activity pill + tray; carried on the spawning message.
+   */
+  tasks?: MobileTask[];
   /** Present when the user attached images (text may be a short label like "Photo"). */
   hasImage?: boolean;
   /**
@@ -122,6 +135,21 @@ export type ChatMessage = {
    * while your computer was offline" caption.
    */
   cloudFallback?: boolean;
+};
+
+/**
+ * One background task (spawned agent) for the activity pill + tray. Folded
+ * desktop-side from the turn's `agent-*` lifecycle events and sent over the
+ * bridge on the spawning message.
+ */
+export type MobileTask = {
+  id: string;
+  title: string;
+  status: "running" | "completed" | "error" | "canceled";
+  /** Live narration while running ("Reading file…"). */
+  statusText?: string;
+  createdAt: number;
+  completedAt?: number;
 };
 
 export type DesktopBridgeStatus = {

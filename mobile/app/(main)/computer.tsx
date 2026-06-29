@@ -278,6 +278,7 @@ function ComputerChatSurface({
         dictationAnonymous={false}
         onOpenArtifact={setSelectedArtifact}
         onOpenDeviceSheet={() => setDeviceSheetOpen(true)}
+        activityTasks={thread.conversationTasks}
       />
       <ComputerDeviceSheet
         visible={deviceSheetOpen}

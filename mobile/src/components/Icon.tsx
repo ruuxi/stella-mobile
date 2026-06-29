@@ -44,7 +44,13 @@ export type IconName =
   | "share"
   | "wifi-off"
   | "camera"
-  | "smartphone";
+  | "smartphone"
+  | "edit-3"
+  | "globe"
+  | "terminal"
+  | "sparkles"
+  | "clock"
+  | "alert-circle";
 
 const FEATHER_NAMES: Record<
   IconName,
@@ -87,6 +93,12 @@ const FEATHER_NAMES: Record<
   "wifi-off": "wifi-off",
   camera: "camera",
   smartphone: "smartphone",
+  "edit-3": "edit-3",
+  globe: "globe",
+  terminal: "terminal",
+  sparkles: "zap",
+  clock: "clock",
+  "alert-circle": "alert-circle",
 };
 
 const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
@@ -127,6 +139,12 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   "wifi-off": "wifi.slash",
   camera: "camera",
   smartphone: "iphone",
+  "edit-3": "pencil",
+  globe: "globe",
+  terminal: "terminal",
+  sparkles: "sparkles",
+  clock: "clock",
+  "alert-circle": "exclamationmark.circle",
 };
 
 type IconProps = {

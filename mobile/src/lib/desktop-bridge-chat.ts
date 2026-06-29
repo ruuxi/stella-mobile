@@ -14,7 +14,8 @@ import {
   type StoredPhoneAccess,
 } from "./phone-access";
 import { postJson } from "./http";
-import type { ChatArtifact, ChatMessage } from "../types";
+import type { ChatArtifact, ChatMessage, MobileTask } from "../types";
+import type { ToolStep } from "./tool-activity";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
 const DESKTOP_WAKE_ATTEMPTS = 5;
@@ -573,6 +574,68 @@ async function listDesktopBridgeMessages(
   return parseDesktopBridgeMessageRows(rows, conversationId);
 }
 
+function parseToolSteps(value: unknown): ToolStep[] {
+  if (!Array.isArray(value)) return [];
+  const steps: ToolStep[] = [];
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const id = asString(record.id).trim();
+    const toolName = asString(record.toolName).trim();
+    const status = record.status;
+    if (!id || !toolName || (status !== "completed" && status !== "error")) {
+      continue;
+    }
+    const argsRecord = asRecord(record.args);
+    let args: Record<string, string> | undefined;
+    if (argsRecord) {
+      const collected: Record<string, string> = {};
+      for (const [key, raw] of Object.entries(argsRecord)) {
+        if (typeof raw === "string") collected[key] = raw;
+      }
+      if (Object.keys(collected).length > 0) args = collected;
+    }
+    steps.push({ id, toolName, status, ...(args ? { args } : {}) });
+  }
+  return steps;
+}
+
+const TASK_STATUSES = new Set(["running", "completed", "error", "canceled"]);
+
+function parseTasks(value: unknown): MobileTask[] {
+  if (!Array.isArray(value)) return [];
+  const tasks: MobileTask[] = [];
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const id = asString(record.id).trim();
+    const title = asString(record.title).trim();
+    const status = record.status;
+    if (!id || !title || typeof status !== "string" || !TASK_STATUSES.has(status)) {
+      continue;
+    }
+    const statusText = asString(record.statusText).trim();
+    const createdAt =
+      typeof record.createdAt === "number" && Number.isFinite(record.createdAt)
+        ? record.createdAt
+        : 0;
+    const completedAt =
+      typeof record.completedAt === "number" &&
+      Number.isFinite(record.completedAt)
+        ? record.completedAt
+        : undefined;
+    tasks.push({
+      id,
+      title,
+      status: status as MobileTask["status"],
+      ...(statusText ? { statusText } : {}),
+      createdAt,
+      ...(completedAt !== undefined ? { completedAt } : {}),
+    });
+  }
+  return tasks;
+}
+
 function parseDesktopBridgeMessageRows(
   rows: unknown[],
   conversationId: string,
@@ -585,6 +648,8 @@ function parseDesktopBridgeMessageRows(
       const role = record.role;
       const text = normalizeDesktopChatMessageText(asString(record.text));
       const artifacts = parseChatArtifacts(record.artifacts, conversationId);
+      const toolSteps = parseToolSteps(record.toolSteps);
+      const tasks = parseTasks(record.tasks);
       const requestId = asString(record.requestId).trim();
       const timestamp =
         typeof record.timestamp === "number" &&
@@ -594,7 +659,10 @@ function parseDesktopBridgeMessageRows(
       if (
         !id ||
         (role !== "user" && role !== "assistant") ||
-        (!text && artifacts.length === 0)
+        (!text &&
+          artifacts.length === 0 &&
+          toolSteps.length === 0 &&
+          tasks.length === 0)
       ) {
         return null;
       }
@@ -605,6 +673,8 @@ function parseDesktopBridgeMessageRows(
         ...(requestId ? { requestId } : {}),
         ...(timestamp !== undefined ? { timestamp, createdAt: timestamp } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),
+        ...(toolSteps.length > 0 ? { toolSteps } : {}),
+        ...(tasks.length > 0 ? { tasks } : {}),
       };
     })
     .filter((message): message is ChatMessage => Boolean(message));

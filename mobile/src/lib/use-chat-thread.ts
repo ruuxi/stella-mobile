@@ -22,7 +22,7 @@ import { mergeMessagesById, reconcileSentDesktopTurn } from "./chat-merge";
 import { createStreamTextSmoother } from "./stream-text-smoother";
 import { userFacingError } from "./user-facing-error";
 import { notifySuccess } from "./haptics";
-import type { ChatArtifact, ChatMessage } from "../types";
+import type { ChatArtifact, ChatMessage, MobileTask } from "../types";
 
 /** Cap on how many desktop messages we pull per sync. */
 const HISTORY_MESSAGE_LIMIT = 100;
@@ -85,6 +85,8 @@ export type ChatThread = {
   storageLoaded: boolean;
   /** Recent artifacts in the conversation, newest first and de-duplicated. */
   conversationArtifacts: ChatArtifact[];
+  /** Background tasks for the activity pill + tray, running-first then newest. */
+  conversationTasks: MobileTask[];
   send: () => void;
   stop: () => void;
 };
@@ -626,6 +628,23 @@ export function useChatThread(opts: {
     return out;
   }, [messages]);
 
+  // Every background task across the conversation, newest first, running ones
+  // pinned to the top — the data behind the activity pill + tray. Tasks ride on
+  // their spawning message; dedupe by id (a re-sync re-emits the same task with
+  // updated status) keeping the latest occurrence.
+  const conversationTasks = useMemo(() => {
+    const byId = new Map<string, MobileTask>();
+    for (const message of messages) {
+      for (const task of message.tasks ?? []) {
+        byId.set(task.id, task);
+      }
+    }
+    const rank = (task: MobileTask) => (task.status === "running" ? 0 : 1);
+    return [...byId.values()].sort(
+      (a, b) => rank(a) - rank(b) || b.createdAt - a.createdAt,
+    );
+  }, [messages]);
+
   return {
     messages,
     draft,
@@ -636,6 +655,7 @@ export function useChatThread(opts: {
     workingStatus,
     storageLoaded,
     conversationArtifacts,
+    conversationTasks,
     send,
     stop,
   };
