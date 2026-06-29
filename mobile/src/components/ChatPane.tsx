@@ -37,6 +37,10 @@ import { LinearGradient } from "expo-linear-gradient";
 import MaskedView from "@react-native-masked-view/masked-view";
 import * as Clipboard from "expo-clipboard";
 import * as ImagePicker from "expo-image-picker";
+import Reanimated, {
+  useAnimatedKeyboard,
+  useAnimatedStyle,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, type IconName } from "./Icon";
 import { GlassSurface, liquidGlassSupported } from "./glass";
@@ -48,7 +52,10 @@ import { ToolActivityTrace } from "./ToolActivityTrace";
 import { ActivityPill, ActivityTray } from "./ActivityPill";
 import { deriveToolActivity } from "../lib/tool-activity";
 import { DictationRecordingBar } from "./DictationRecordingBar";
-import { WorkingIndicator } from "./WorkingIndicator";
+import {
+  WorkingIndicator,
+  WORKING_INDICATOR_SLOT_HEIGHT,
+} from "./WorkingIndicator";
 import { useDictation } from "../lib/dictation";
 import { useChatSearch } from "../lib/chat-search";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
@@ -171,6 +178,15 @@ const FOLLOW_GENTLE_LERP_FACTOR = 0.12;
 
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
+/**
+ * Fixed reading-area floor below the last message (desktop's
+ * `.event-list-trailing-region` `min-height`). The inline working indicator
+ * lives inside this footer region; reserving a constant height means the
+ * indicator fading in/out never grows or shrinks the chat's content, so the
+ * tail never jumps when a reply starts or finishes. Sized to fully contain the
+ * indicator slot plus a few pt so it reads as a deliberate gap when idle.
+ */
+const CHAT_TAIL_GAP = WORKING_INDICATOR_SLOT_HEIGHT + 12;
 /** Cancels the shell `content` padding so chat owns its horizontal inset. */
 const SHELL_CONTENT_PADDING = 20;
 /** Horizontal inset from the true screen edge once shell padding is cancelled. */
@@ -178,6 +194,13 @@ const CHAT_HORIZONTAL_INSET = 12;
 
 // ---------------------------------------------------------------------------
 // Keyboard inset — keeps the composer and message list above the OS keyboard.
+//
+// The composer's *motion* is driven separately, on the UI thread, by
+// reanimated's `useAnimatedKeyboard` (see `composerKeyboardStyle`), so it stays
+// glued to the keyboard frame-for-frame in both directions. This hook only
+// tracks the settled height as JS state, used to reserve the message list's
+// bottom inset — that reserve doesn't need frame-perfect smoothness (content
+// just scrolls under the composer), so no `LayoutAnimation` is needed here.
 // ---------------------------------------------------------------------------
 
 function useKeyboardInset() {
@@ -190,28 +213,10 @@ function useKeyboardInset() {
     const hideEvent =
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const onShow = (e: {
-      endCoordinates: { height: number };
-      duration?: number;
-    }) => {
-      if (Platform.OS === "ios") {
-        LayoutAnimation.configureNext({
-          duration: e.duration ?? 250,
-          update: { type: LayoutAnimation.Types.keyboard },
-        });
-      }
+    const onShow = (e: { endCoordinates: { height: number } }) => {
       setHeight(e.endCoordinates.height);
     };
-
-    const onHide = (e: { duration?: number }) => {
-      if (Platform.OS === "ios") {
-        LayoutAnimation.configureNext({
-          duration: e.duration ?? 250,
-          update: { type: LayoutAnimation.Types.keyboard },
-        });
-      }
-      setHeight(0);
-    };
+    const onHide = () => setHeight(0);
 
     const showSub = Keyboard.addListener(showEvent, onShow);
     const hideSub = Keyboard.addListener(hideEvent, onHide);
@@ -223,9 +228,12 @@ function useKeyboardInset() {
   }, []);
 
   const open = height > 0;
-  // When the keyboard is up it covers the home-indicator band; only reserve
-  // that inset on the composer while the keyboard is hidden.
-  const composerBottomPad = open ? 6 : 6 + insets.bottom;
+  // The composer's bottom pad is keyboard-independent: it always reserves the
+  // home-indicator safe area. When the keyboard is up the composer is lifted
+  // clear of it by `composerKeyboardStyle` (by `keyboardHeight - insets.bottom`),
+  // so that reserved band lands inside the keyboard region — a constant 6pt gap
+  // sits above the keyboard either way, with no per-state padding swap to animate.
+  const composerBottomPad = 6 + insets.bottom;
 
   return { height, open, composerBottomPad };
 }
@@ -385,7 +393,10 @@ function useChatScroll(listTrailingSlackPx: number) {
     const { layoutHeight } = metricsRef.current;
     const contentHeight = contentHeightRef.current;
     const maxOffset = Math.max(0, contentHeight - layoutHeight);
-    const target = Math.max(0, Math.min(maxOffset, followTargetOffsetRef.current));
+    const target = Math.max(
+      0,
+      Math.min(maxOffset, followTargetOffsetRef.current),
+    );
     const current = followCurrentRef.current;
     const diff = target - current;
     const absDiff = Math.abs(diff);
@@ -444,11 +455,15 @@ function useChatScroll(listTrailingSlackPx: number) {
     // chunk boundaries via setFollowTarget), so the motion is a continuous glide
     // rather than a per-chunk ease-out-to-stop.
     const dt = lastFrameTimeRef.current
-      ? Math.min(FOLLOW_MAX_FRAME_MS, Math.max(1, now - lastFrameTimeRef.current))
+      ? Math.min(
+          FOLLOW_MAX_FRAME_MS,
+          Math.max(1, now - lastFrameTimeRef.current),
+        )
       : FOLLOW_DEFAULT_FRAME_MS;
     lastFrameTimeRef.current = now;
     const accel =
-      FOLLOW_SPRING_STIFFNESS * diff - FOLLOW_SPRING_DAMPING * followVelRef.current;
+      FOLLOW_SPRING_STIFFNESS * diff -
+      FOLLOW_SPRING_DAMPING * followVelRef.current;
     // Stream-follow never runs backward, so clamp velocity ≥ 0.
     followVelRef.current = Math.max(0, followVelRef.current + accel * dt);
     let step = followVelRef.current * dt;
@@ -873,10 +888,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       ) : null}
       {showArtifacts ? (
         <View
-          style={[
-            styles.artifactGroup,
-            hasText && styles.artifactGroupSpaced,
-          ]}
+          style={[styles.artifactGroup, hasText && styles.artifactGroupSpaced]}
         >
           {artifacts.map((artifact) =>
             artifact.payload.kind === "agent-work" ? (
@@ -1117,7 +1129,9 @@ function ScrollToBottomFab({
           </Animated.View>
         </GlassSurface>
         {hasUnread ? (
-          <Animated.View style={[styles.scrollToBottomDot, { opacity: anim }]} />
+          <Animated.View
+            style={[styles.scrollToBottomDot, { opacity: anim }]}
+          />
         ) : null}
       </Pressable>
     </Animated.View>
@@ -1316,21 +1330,21 @@ function PlusMenuPopover({
           },
         ]}
       >
-          <GlassSurface
-            glass="regular"
-            legible
-            present={Boolean(measured)}
-            radius={14}
-            ringed
-            pointerEvents="none"
-            style={StyleSheet.absoluteFill}
-          />
-          {/* Fade the menu *contents* — never the glass or its parent. Animating
+        <GlassSurface
+          glass="regular"
+          legible
+          present={Boolean(measured)}
+          radius={14}
+          ringed
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+        />
+        {/* Fade the menu *contents* — never the glass or its parent. Animating
               opacity on a GlassView ancestor makes iOS drop the Liquid Glass
               material entirely (renders clear). The glass itself fades via its
               own `present`-driven materialize animation; the spring lives on the
               transform above. */}
-          <Animated.View style={{ opacity: measured ? anim : 0 }}>
+        <Animated.View style={{ opacity: measured ? anim : 0 }}>
           {submenuTitle ? (
             <Pressable
               accessibilityLabel="Back to menu"
@@ -1408,7 +1422,7 @@ function PlusMenuPopover({
               </Pressable>
             );
           })}
-          </Animated.View>
+        </Animated.View>
       </Animated.View>
     </View>
   );
@@ -1489,9 +1503,7 @@ const foldText = (value: string): string =>
 
 // Split a raw query into folded terms for multi-word (AND) matching.
 const foldQueryTerms = (query: string): string[] =>
-  foldText(query)
-    .split(/\s+/)
-    .filter(Boolean);
+  foldText(query).split(/\s+/).filter(Boolean);
 
 // Fold a string while tracking, for each folded character, the original index
 // it came from. Lets the snippet highlight map a match found in folded space
@@ -1700,13 +1712,35 @@ export function ChatPane({
 
   const inputRef = useRef<TextInput>(null);
   const { height: keyboardHeight, composerBottomPad } = useKeyboardInset();
+  // UI-thread keyboard frame. Drives the composer's lift directly so it tracks
+  // the keyboard exactly — both rising and falling — instead of chasing it via
+  // a JS-scheduled layout animation that the OS curve always out-runs.
+  const keyboard = useAnimatedKeyboard();
+  // The composer rests at `composerBottomPad` (home-indicator safe area) above
+  // the screen bottom. Lift it by the keyboard height *minus* that already-
+  // reserved band so its content lands a constant gap above the keyboard.
+  const composerKeyboardStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: -Math.max(0, keyboard.height.value - insets.bottom) },
+    ],
+  }));
+  // Extra reading area the message list must reserve below its content while the
+  // keyboard is up, mirroring the composer's lift (JS side, for the list inset).
+  const keyboardExtra = Math.max(0, keyboardHeight - insets.bottom);
+
   // The composer + working indicator overlay the bottom of the chat. We
   // measure their actual height so the list can reserve matching
   // bottom inset, letting messages scroll under the composer (visible
   // through transparent margins around the glass shell) instead of being
-  // clipped by it.
+  // clipped by it. The composer's keyboard lift is a transform, so this
+  // measured height stays constant across keyboard show/hide.
   const [footerHeight, setFooterHeight] = useState(0);
-  const listTrailingSlackPx = EDGE_FADE + footerHeight;
+  // The reserved tail region is real list content below the last row, so the
+  // scroll-follow math must count it as trailing slack alongside the edge fade,
+  // composer inset, and the keyboard reserve — otherwise the stream-follow
+  // target lands a tail-gap too low and over-scrolls past the assistant row.
+  const listTrailingSlackPx =
+    EDGE_FADE + footerHeight + keyboardExtra + CHAT_TAIL_GAP;
 
   // The footer (working indicator + composer) re-measures on every frame of any
   // layout animation it runs. Each measurement re-renders the list padding and
@@ -1784,13 +1818,12 @@ export function ChatPane({
   // chat up so the keyboard doesn't cover the latest messages. If the user
   // is reading further up, leave their scroll position alone.
   //
-  // The list's reserved bottom inset is driven by `footerHeight`, which only
-  // grows a frame *after* `keyboardHeight` changes (the footer re-renders with
-  // the keyboard pad, then reports its taller size via onLayout). Scrolling
-  // immediately off `keyboardHeight` therefore races that layout pass and often
-  // lands short — the keyboard ends up covering the tail. That timing race is
-  // why it feels inconsistent. So we record the intent here and do the
-  // authoritative scroll once `footerHeight` reflects the keyboard below.
+  // The list's reserved bottom inset grows with `keyboardExtra` in the same
+  // render as `keyboardHeight` changes, but the layout pass that applies the
+  // larger inset only commits the following frame. Scrolling immediately here
+  // would race that pass and land short — the keyboard ends up covering the
+  // tail. So we record the intent and do the authoritative scroll once the
+  // inset has actually grown (the effect keyed on `keyboardExtra` below).
   const prevKeyboardHeightRef = useRef(0);
   const pinTailForKeyboardRef = useRef(false);
   useEffect(() => {
@@ -1813,7 +1846,7 @@ export function ChatPane({
     if (!pinTailForKeyboardRef.current) return;
     pinTailForKeyboardRef.current = false;
     scroll.listRef.current?.scrollToEnd({ animated: true });
-  }, [footerHeight, scroll.listRef]);
+  }, [keyboardExtra, scroll.listRef]);
 
   useEffect(() => {
     const grew = messages.length > prevLenRef.current;
@@ -2199,11 +2232,17 @@ export function ChatPane({
   const getItemType = useCallback((item: ChatMessage) => item.role, []);
 
   // The working indicator rides at the tail of the chat (desktop-style) instead
-  // of floating above the composer. It collapses to nothing when idle, so it
-  // only takes space — right under the last message — while a reply is working.
+  // of floating above the composer. It's wrapped in a fixed-height tail region
+  // so the indicator collapsing to nothing when idle — or growing back in when
+  // a reply starts — never changes the footer's height, and the chat tail never
+  // jumps. The constant gap doubles as a reading-area floor below the last row.
   const listFooter = useMemo(
-    () => <WorkingIndicator active={streaming} status={workingStatus} />,
-    [streaming, workingStatus],
+    () => (
+      <View style={styles.chatTail}>
+        <WorkingIndicator active={streaming} status={workingStatus} />
+      </View>
+    ),
+    [streaming, workingStatus, styles.chatTail],
   );
 
   // Search shows a separate results menu that overlays the chat (the chat
@@ -2283,8 +2322,11 @@ export function ChatPane({
     enableAttachments && (attachments?.length ?? 0) > 0;
 
   const listContentContainerStyle = useMemo(
-    () => [styles.list, { paddingBottom: EDGE_FADE + footerHeight }],
-    [styles.list, footerHeight],
+    () => [
+      styles.list,
+      { paddingBottom: EDGE_FADE + footerHeight + keyboardExtra },
+    ],
+    [styles.list, footerHeight, keyboardExtra],
   );
 
   return (
@@ -2346,11 +2388,19 @@ export function ChatPane({
                 streaming
                   ? {
                       animated: false,
-                      on: { dataChange: false, itemLayout: false, layout: false },
+                      on: {
+                        dataChange: false,
+                        itemLayout: false,
+                        layout: false,
+                      },
                     }
                   : {
                       animated: false,
-                      on: { dataChange: true, itemLayout: false, layout: false },
+                      on: {
+                        dataChange: true,
+                        itemLayout: false,
+                        layout: false,
+                      },
                     }
               }
             />
@@ -2512,10 +2562,10 @@ export function ChatPane({
         ) : null}
       </View>
 
-      <View
+      <Reanimated.View
         style={[
           styles.footerOverlay,
-          { paddingBottom: keyboardHeight },
+          composerKeyboardStyle,
           searchOpen && styles.hiddenFooter,
         ]}
         onLayout={onFooterLayout}
@@ -2739,7 +2789,7 @@ export function ChatPane({
             )}
           </GlassSurface>
         </View>
-      </View>
+      </Reanimated.View>
       <PlusMenuPopover
         visible={Boolean(plusMenuAnchor) && plusMenuOptions.length > 0}
         anchor={plusMenuAnchor}
@@ -2874,6 +2924,13 @@ const makeStyles = (colors: Colors) =>
       paddingBottom: EDGE_FADE,
     },
     itemSeparator: { height: MESSAGE_LIST_GAP },
+    // Fixed-height tail below the last message. Hosts the inline working
+    // indicator and keeps its footprint constant whether or not it's showing.
+    chatTail: {
+      minHeight: CHAT_TAIL_GAP,
+      paddingTop: 4,
+      justifyContent: "flex-start",
+    },
 
     emptyState: {
       alignItems: "center",
