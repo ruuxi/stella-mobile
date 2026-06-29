@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useIsFocused } from "expo-router";
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
 import {
@@ -132,10 +133,7 @@ function ComputerRouter() {
   }
 
   return (
-    <ComputerChatSurface
-      access={phoneAccess}
-      onAccessChange={setPhoneAccess}
-    />
+    <ComputerChatSurface access={phoneAccess} onAccessChange={setPhoneAccess} />
   );
 }
 
@@ -234,12 +232,44 @@ function ComputerChatSurface({
     }
   }, [status.available, waking]);
 
-  const wake = useCallback(() => {
-    tapLight();
+  const triggerWake = useCallback(() => {
     setWaking(true);
     wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
     void requestDesktopConnection(access).catch(() => setWaking(false));
   }, [access]);
+
+  const wake = useCallback(() => {
+    tapLight();
+    triggerWake();
+  }, [triggerWake]);
+
+  // Auto-wake: the computer tab exists to talk to the desktop, so landing here
+  // and finding it asleep should start a wake attempt on its own rather than
+  // making the user open the device sheet and tap Wake. Fire once per asleep
+  // spell — armed again only after it next comes online — so a desktop that
+  // stays off isn't spammed with wake requests; the sheet's manual Wake button
+  // remains for an explicit retry. Gated on focus and a settled offline read so
+  // we don't wake a computer the user isn't even looking at, or when the phone
+  // has no connectivity to deliver the request.
+  const isFocused = useIsFocused();
+  const autoWokeRef = useRef(false);
+  useEffect(() => {
+    // Re-arm whenever the user leaves the tab or the desktop comes online, so a
+    // later return (or a fresh sleep) gets one more automatic attempt.
+    if (!isFocused || status.available === true) {
+      autoWokeRef.current = false;
+      return;
+    }
+    if (
+      !offline &&
+      status.available === false &&
+      !waking &&
+      !autoWokeRef.current
+    ) {
+      autoWokeRef.current = true;
+      triggerWake();
+    }
+  }, [isFocused, offline, status.available, waking, triggerWake]);
 
   const platformLabel = status.platform?.trim() || "Your computer";
   const statusLabel = status.checking
