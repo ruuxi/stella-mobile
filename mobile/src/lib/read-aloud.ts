@@ -150,7 +150,7 @@ async function fetchInworldReadAloudAudio(text: string) {
     body: JSON.stringify({
       text,
       voiceProvider: "inworld",
-      voice: "Evelyn",
+      voice: "Wendy",
       model: "inworld-tts-2",
     }),
   });
