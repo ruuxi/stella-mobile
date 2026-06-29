@@ -31,6 +31,8 @@ export type IconName =
   | "cpu"
   | "volume-2"
   | "volume-x"
+  | "pause"
+  | "play"
   | "settings"
   | "more-horizontal"
   | "search"
@@ -71,6 +73,8 @@ const FEATHER_NAMES: Record<
   cpu: "cpu",
   "volume-2": "volume-2",
   "volume-x": "volume-x",
+  pause: "pause",
+  play: "play",
   settings: "settings",
   "more-horizontal": "more-horizontal",
   search: "search",
@@ -109,6 +113,8 @@ const SYMBOL_NAMES: Record<IconName, SymbolViewProps["name"]> = {
   cpu: "cpu",
   "volume-2": "speaker.wave.2",
   "volume-x": "speaker.slash",
+  pause: "pause.fill",
+  play: "play.fill",
   settings: "gearshape",
   "more-horizontal": "ellipsis",
   search: "magnifyingglass",

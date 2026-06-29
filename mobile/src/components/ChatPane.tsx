@@ -50,10 +50,12 @@ import { useDictation } from "../lib/dictation";
 import { useChatSearch } from "../lib/chat-search";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
 import {
+  pauseReadAloud,
+  resumeReadAloud,
   speakReply,
   stopReadAloud,
   useReadAloudPreference,
-  useSpeakingMessage,
+  useReadAloudState,
 } from "../lib/read-aloud";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import { type Colors } from "../theme/colors";
@@ -671,10 +673,10 @@ type ChatStyles = ReturnType<typeof makeStyles>;
 
 /**
  * The always-visible action row under a finished assistant message: copy, read
- * aloud (toggles to stop while playing), and share. These mirror the long-press
- * menu so the common actions are one tap away instead of a hold. The row reads
- * the singleton speaking state directly so only it re-renders as playback
- * starts/stops, not the whole transcript.
+ * aloud (a pause/play toggle while a clip is loaded), and share. These mirror
+ * the long-press menu so the common actions are one tap away instead of a hold.
+ * The row reads the singleton playback state directly so only it re-renders as
+ * playback starts/pauses/stops, not the whole transcript.
  */
 const AssistantActions = memo(function AssistantActions({
   text,
@@ -687,9 +689,19 @@ const AssistantActions = memo(function AssistantActions({
   styles: ChatStyles;
   colors: Colors;
 }) {
-  const speakingId = useSpeakingMessage();
-  const isSpeaking = speakingId === messageId;
+  const playback = useReadAloudState();
+  const status = playback?.messageId === messageId ? playback.status : null;
   if (!text.trim()) return null;
+  const soundIcon =
+    status === "playing" ? "pause" : status === "loading" ? "volume-2" : "play";
+  const soundLabel =
+    status === "playing"
+      ? "Pause reading aloud"
+      : status === "paused"
+        ? "Resume reading aloud"
+        : status === "loading"
+          ? "Stop reading aloud"
+          : "Read aloud";
   return (
     <View style={styles.messageActions}>
       <Pressable
@@ -710,7 +722,11 @@ const AssistantActions = memo(function AssistantActions({
       <Pressable
         onPress={() => {
           tapLight();
-          if (isSpeaking) {
+          if (status === "playing") {
+            pauseReadAloud();
+          } else if (status === "paused") {
+            resumeReadAloud();
+          } else if (status === "loading") {
             stopReadAloud();
           } else {
             void speakReply(text, messageId);
@@ -718,16 +734,17 @@ const AssistantActions = memo(function AssistantActions({
         }}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel={isSpeaking ? "Stop reading aloud" : "Read aloud"}
+        accessibilityLabel={soundLabel}
         style={({ pressed }) => [
           styles.messageActionButton,
           pressed && styles.messageActionButtonPressed,
         ]}
       >
         <Icon
-          name={isSpeaking ? "stop" : "volume-2"}
+          name={soundIcon}
           size={16}
-          color={isSpeaking ? colors.text : colors.textMuted}
+          color={status ? colors.text : colors.textMuted}
+          effect={status === "loading" ? "pulse" : undefined}
         />
       </Pressable>
       <Pressable

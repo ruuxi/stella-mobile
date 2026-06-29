@@ -23,17 +23,31 @@ const emit = () => {
   for (const listener of listeners) listener();
 };
 
-// Which message is currently being read aloud, so a message's sound button can
-// show a stop state and reset itself when playback ends. `null` = nothing
-// playing. Tracked here (not in a component) because playback is a singleton.
-let speakingMessageId: string | null = null;
+// Playback is a singleton (one clip at a time), so its state lives here rather
+// than in a component. `messageId` is the message whose audio is loaded; the
+// status drives that message's sound button — a spinner while the audio is
+// fetched, then a pause/play toggle. `null` means nothing is loaded. Pausing
+// keeps the clip and player alive so playback can resume in place instead of
+// regenerating the audio from scratch.
+export type ReadAloudStatus = "loading" | "playing" | "paused";
+export type ReadAloudState = { messageId: string | null; status: ReadAloudStatus };
+
+let playbackState: ReadAloudState | null = null;
 const speakingListeners = new Set<() => void>();
 const emitSpeaking = () => {
   for (const listener of speakingListeners) listener();
 };
-const setSpeakingMessageId = (id: string | null) => {
-  if (speakingMessageId === id) return;
-  speakingMessageId = id;
+const setPlaybackState = (next: ReadAloudState | null) => {
+  if (
+    playbackState === next ||
+    (playbackState != null &&
+      next != null &&
+      playbackState.messageId === next.messageId &&
+      playbackState.status === next.status)
+  ) {
+    return;
+  }
+  playbackState = next;
   emitSpeaking();
 };
 
@@ -45,12 +59,12 @@ const speakingStore = {
     };
   },
   getSnapshot() {
-    return speakingMessageId;
+    return playbackState;
   },
 };
 
-/** The id of the message currently being read aloud, or `null`. */
-export function useSpeakingMessage() {
+/** Current read-aloud playback state, or `null` when nothing is loaded. */
+export function useReadAloudState() {
   return useSyncExternalStore(
     speakingStore.subscribe,
     speakingStore.getSnapshot,
@@ -154,7 +168,7 @@ async function fetchInworldReadAloudAudio(text: string) {
 
 export function stopReadAloud() {
   playbackGeneration += 1;
-  setSpeakingMessageId(null);
+  setPlaybackState(null);
   const player = currentPlayer;
   currentPlayer = null;
   if (player) {
@@ -178,12 +192,39 @@ export function stopReadAloud() {
   }
 }
 
+/** Pause the active clip, keeping it loaded so it can resume in place. */
+export function pauseReadAloud() {
+  if (!currentPlayer || playbackState?.status !== "playing") return;
+  try {
+    currentPlayer.pause();
+  } catch {
+    /* ignore */
+  }
+  setPlaybackState({ messageId: playbackState.messageId, status: "paused" });
+}
+
+/** Resume a clip that was paused with `pauseReadAloud`. */
+export function resumeReadAloud() {
+  if (!currentPlayer || playbackState?.status !== "paused") return;
+  try {
+    currentPlayer.play();
+  } catch {
+    /* ignore */
+  }
+  setPlaybackState({ messageId: playbackState.messageId, status: "playing" });
+}
+
 export async function speakReply(text: string, messageId?: string) {
   const spoken = stripForSpeech(text);
   if (!spoken) return;
 
   stopReadAloud();
   const generation = playbackGeneration;
+  const id = messageId ?? null;
+  // Mark the message as loading right away so its button reflects the active
+  // request — without this, a second tap during generation would start a whole
+  // new request instead of being treated as a pause/cancel.
+  setPlaybackState({ messageId: id, status: "loading" });
 
   try {
     const { audio, contentType } = await fetchInworldReadAloudAudio(spoken);
@@ -203,16 +244,16 @@ export async function speakReply(text: string, messageId?: string) {
     const player = createAudioPlayer({ uri: file.uri });
     currentFile = file;
     currentPlayer = player;
-    // Reset the speaking state when the clip finishes on its own so the
-    // message's sound button flips back from stop to play.
+    // Reset the playback state when the clip finishes on its own so the
+    // message's sound button flips back to play.
     player.addListener("playbackStatusUpdate", (status) => {
       if (generation !== playbackGeneration) return;
-      if (status.didJustFinish) setSpeakingMessageId(null);
+      if (status.didJustFinish) setPlaybackState(null);
     });
-    setSpeakingMessageId(messageId ?? null);
+    setPlaybackState({ messageId: id, status: "playing" });
     player.play();
   } catch (error) {
-    setSpeakingMessageId(null);
+    if (generation === playbackGeneration) setPlaybackState(null);
     console.warn("[read-aloud] playback failed", error);
   }
 }
