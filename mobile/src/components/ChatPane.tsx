@@ -117,6 +117,45 @@ const FOLLOW_HARD_SNAP_PX = 240;
 const FOLLOW_TARGET_EPSILON_PX = 0.5;
 const FOLLOW_TOP_PEEK_PX = 56;
 
+/**
+ * Auto-follow motion model — ported from desktop's "continuous spring glide".
+ *
+ * Streaming content grows in discrete, irregular bursts (a line / a few tokens
+ * at a time). A naive "ease toward the new bottom with an animated scroll, then
+ * stop" follow restarts a native ease per chunk and crawls the last few pixels
+ * asymptotically, so back-to-back short bumps read as a start/stop stutter.
+ *
+ * Instead we drive the offset ourselves each frame from a critically-damped
+ * spring whose velocity *persists* across frames and across chunk boundaries: a
+ * new chunk just moves the target, and because the spring is still carrying
+ * velocity from the previous chunk the motion blends into one continuous glide.
+ * Acceleration scales with the gap (`stiffness · diff`), so a big burst still
+ * catches up quickly while a slow trickle glides gently — no asymptotic crawl,
+ * no per-chunk restart. Critical damping (`damping ≈ 2·√stiffness`) settles
+ * without overshoot. The loop stays warm for `FOLLOW_STREAM_IDLE_MS` after the
+ * last growth so a slow stream doesn't re-settle per line, then eases to rest.
+ * Above `FOLLOW_HARD_SNAP_PX` we land directly — that far off, any glide would
+ * leave the streamed text below the viewport for too many frames.
+ */
+const FOLLOW_SPRING_STIFFNESS = 0.00026; // px/ms² per px of gap (~250ms settle)
+const FOLLOW_SPRING_DAMPING = 0.0322; // ≈ 2·√stiffness → critically damped
+/** Keep gliding this long after the last content growth before settling to rest. */
+const FOLLOW_STREAM_IDLE_MS = 200;
+/** Clamp per-frame dt so a JS-thread / GC pause can't fling the viewport. */
+const FOLLOW_MAX_FRAME_MS = 48;
+/** Assumed dt for the first frame of a glide (before two timestamps exist). */
+const FOLLOW_DEFAULT_FRAME_MS = 16;
+/** Minimum per-frame step so the loop never stalls on sub-pixel rounding. */
+const FOLLOW_MIN_STEP_PX = 0.5;
+/**
+ * Gentle one-shot profile for the post-send nudge — a single settle into the
+ * reading position with no streaming pressure, so a slow constant ease-out
+ * reads better than the stream-tuned spring. If a stream chunk arrives mid-nudge
+ * its (non-gentle) target update clears the gentle flag and the spring takes
+ * over on the same loop instead of fighting.
+ */
+const FOLLOW_GENTLE_LERP_FACTOR = 0.12;
+
 const EDGE_FADE = 48;
 const MESSAGE_LIST_GAP = 20;
 /** Cancels the shell `content` padding so chat owns its horizontal inset. */
@@ -201,6 +240,16 @@ function useChatScroll(listTrailingSlackPx: number) {
   const assistantLayoutBaselineRef = useRef<number | null>(null);
   /** True while the user's finger is actively dragging the list. */
   const isDraggingRef = useRef(false);
+  /** Spring velocity (px/ms) — persists across frames and chunk boundaries. */
+  const followVelRef = useRef(0);
+  /** Offset we last committed; the spring integrates from here, not laggy native. */
+  const followCurrentRef = useRef(0);
+  /** Timestamp of the previous glide frame, for dt. 0 = first frame. */
+  const lastFrameTimeRef = useRef(0);
+  /** Timestamp of the last content growth, to keep the loop warm between lines. */
+  const lastTargetTimeRef = useRef(0);
+  /** Gentle one-shot (post-send) vs. stream spring profile. */
+  const followGentleRef = useRef(false);
 
   const stopFollowLoop = useCallback(() => {
     if (followRafRef.current) {
@@ -209,6 +258,10 @@ function useChatScroll(listTrailingSlackPx: number) {
     }
     followTargetOffsetRef.current = null;
     followAnimatingUntilMsRef.current = 0;
+    followVelRef.current = 0;
+    lastFrameTimeRef.current = 0;
+    lastTargetTimeRef.current = 0;
+    followGentleRef.current = false;
   }, []);
 
   useEffect(() => () => stopFollowLoop(), [stopFollowLoop]);
@@ -285,68 +338,156 @@ function useChatScroll(listTrailingSlackPx: number) {
     assistantLayoutBaselineRef.current = contentHeightRef.current;
   }, []);
 
-  const flushFollowTarget = useCallback(() => {
-    followRafRef.current = 0;
-
-    const rawTarget = followTargetOffsetRef.current;
-    if (!followArmedRef.current || rawTarget === null) {
-      followTargetOffsetRef.current = null;
-      return;
-    }
-
-    const { offsetY, layoutHeight } = metricsRef.current;
-    const contentHeight = contentHeightRef.current;
-    const maxOffset = Math.max(0, contentHeight - layoutHeight);
-    const target = Math.max(0, Math.min(maxOffset, rawTarget));
-
-    if (target <= offsetY + FOLLOW_TARGET_EPSILON_PX) {
-      followTargetOffsetRef.current = null;
-      return;
-    }
-
-    const absDiff = Math.abs(target - offsetY);
-    followTargetOffsetRef.current = null;
+  // Drive the list to `offset` directly (no native animation) — the spring owns
+  // the motion, so each frame just commits the integrated position. We treat the
+  // committed offset as the source of truth during a glide because native
+  // `onScroll` read-back lags a frame or two behind.
+  const commitOffset = useCallback((offset: number) => {
+    followCurrentRef.current = offset;
+    metricsRef.current.offsetY = offset;
     followAnimatingUntilMsRef.current =
       Date.now() + FOLLOW_NATIVE_ANIMATION_GUARD_MS;
-    metricsRef.current.offsetY = target;
-    listRef.current?.scrollToOffset({
-      offset: target,
-      animated: absDiff <= FOLLOW_HARD_SNAP_PX,
-    });
+    listRef.current?.scrollToOffset({ offset, animated: false });
+  }, []);
 
-    const nextDistFromBottom = Math.max(
-      0,
-      contentHeight - target - layoutHeight,
-    );
-    setAwayFromBottom(
-      contentHeight > layoutHeight + 2 &&
-        nextDistFromBottom > awayFromBottomLimit,
-    );
-  }, [awayFromBottomLimit]);
+  const updateAwayFromBottom = useCallback(
+    (offset: number) => {
+      const { layoutHeight } = metricsRef.current;
+      const contentHeight = contentHeightRef.current;
+      const dist = Math.max(0, contentHeight - offset - layoutHeight);
+      setAwayFromBottom(
+        contentHeight > layoutHeight + 2 && dist > awayFromBottomLimit,
+      );
+    },
+    [awayFromBottomLimit],
+  );
+
+  const stepFollow = useCallback(() => {
+    followRafRef.current = 0;
+    if (!followArmedRef.current || followTargetOffsetRef.current === null) {
+      followTargetOffsetRef.current = null;
+      return;
+    }
+
+    const { layoutHeight } = metricsRef.current;
+    const contentHeight = contentHeightRef.current;
+    const maxOffset = Math.max(0, contentHeight - layoutHeight);
+    const target = Math.max(0, Math.min(maxOffset, followTargetOffsetRef.current));
+    const current = followCurrentRef.current;
+    const diff = target - current;
+    const absDiff = Math.abs(diff);
+    const now = Date.now();
+
+    // Caught up. The gentle one-shot ends here; a stream glide idles in place
+    // (velocity bled off) and stays warm so the next chunk continues without a
+    // restart — until the stream has been quiet for FOLLOW_STREAM_IDLE_MS.
+    if (absDiff < FOLLOW_MIN_STEP_PX) {
+      commitOffset(target);
+      followVelRef.current = 0;
+      lastFrameTimeRef.current = 0;
+      if (
+        followGentleRef.current ||
+        now - lastTargetTimeRef.current > FOLLOW_STREAM_IDLE_MS
+      ) {
+        followTargetOffsetRef.current = null;
+        updateAwayFromBottom(target);
+        return;
+      }
+      followRafRef.current = requestAnimationFrame(stepFollow);
+      return;
+    }
+
+    // Gentle post-send reframe: constant low-factor ease-out, no velocity carry,
+    // no hard snap — a single smooth settle.
+    if (followGentleRef.current) {
+      const lerpStep = diff * FOLLOW_GENTLE_LERP_FACTOR;
+      const stepPx =
+        Math.abs(lerpStep) >= FOLLOW_MIN_STEP_PX
+          ? lerpStep
+          : Math.sign(diff) * FOLLOW_MIN_STEP_PX;
+      commitOffset(current + stepPx);
+      updateAwayFromBottom(current + stepPx);
+      followRafRef.current = requestAnimationFrame(stepFollow);
+      return;
+    }
+
+    // Massive gap (post-tool dump, resumed conversation jumping to the latest
+    // reply) — land directly rather than glide hundreds of px with text
+    // off-screen the whole time. Stay warm so the trickle that follows glides.
+    if (absDiff > FOLLOW_HARD_SNAP_PX) {
+      commitOffset(target);
+      followVelRef.current = 0;
+      lastFrameTimeRef.current = 0;
+      if (now - lastTargetTimeRef.current > FOLLOW_STREAM_IDLE_MS) {
+        followTargetOffsetRef.current = null;
+        updateAwayFromBottom(target);
+        return;
+      }
+      followRafRef.current = requestAnimationFrame(stepFollow);
+      return;
+    }
+
+    // Critically-damped spring step. Velocity persists across frames (and across
+    // chunk boundaries via setFollowTarget), so the motion is a continuous glide
+    // rather than a per-chunk ease-out-to-stop.
+    const dt = lastFrameTimeRef.current
+      ? Math.min(FOLLOW_MAX_FRAME_MS, Math.max(1, now - lastFrameTimeRef.current))
+      : FOLLOW_DEFAULT_FRAME_MS;
+    lastFrameTimeRef.current = now;
+    const accel =
+      FOLLOW_SPRING_STIFFNESS * diff - FOLLOW_SPRING_DAMPING * followVelRef.current;
+    // Stream-follow never runs backward, so clamp velocity ≥ 0.
+    followVelRef.current = Math.max(0, followVelRef.current + accel * dt);
+    let step = followVelRef.current * dt;
+    if (step < FOLLOW_MIN_STEP_PX) step = FOLLOW_MIN_STEP_PX;
+    if (step >= diff) {
+      // Would reach/overshoot this frame — land exactly and keep velocity
+      // consistent with the distance actually covered.
+      commitOffset(target);
+      followVelRef.current = diff / dt;
+    } else {
+      commitOffset(current + step);
+    }
+    updateAwayFromBottom(followCurrentRef.current);
+    followRafRef.current = requestAnimationFrame(stepFollow);
+  }, [commitOffset, updateAwayFromBottom]);
 
   const setFollowTarget = useCallback(
-    (target: number) => {
+    (target: number, gentle = false) => {
       if (!followArmedRef.current) return;
 
-      const { offsetY, layoutHeight } = metricsRef.current;
+      const { layoutHeight } = metricsRef.current;
       const contentHeight = contentHeightRef.current;
       const maxOffset = Math.max(0, contentHeight - layoutHeight);
       const clamped = Math.max(0, Math.min(maxOffset, target));
-      const pendingTarget = followTargetOffsetRef.current;
+
+      // Seed the spring's current offset from the real position when starting
+      // cold, so the first frame integrates from where the list actually sits.
+      if (!followRafRef.current && followTargetOffsetRef.current === null) {
+        followCurrentRef.current = metricsRef.current.offsetY;
+      }
+
+      // Don't follow backwards during a stream glide — that would scroll the
+      // user up against their intent. The gentle post-send nudge opts in.
       if (
-        clamped <= offsetY + FOLLOW_TARGET_EPSILON_PX &&
-        pendingTarget === null
+        !gentle &&
+        clamped <= followCurrentRef.current + FOLLOW_TARGET_EPSILON_PX
       ) {
         return;
       }
 
-      followTargetOffsetRef.current =
-        pendingTarget === null ? clamped : Math.max(pendingTarget, clamped);
+      // Switching motion profile shouldn't carry stale velocity between them.
+      if (gentle !== followGentleRef.current) followVelRef.current = 0;
+      followGentleRef.current = gentle;
+      followTargetOffsetRef.current = clamped;
+      // Mark content growth so the spring stays warm across the irregular gaps
+      // of a slow stream (gentle nudges don't extend it).
+      if (!gentle) lastTargetTimeRef.current = Date.now();
       if (!followRafRef.current) {
-        followRafRef.current = requestAnimationFrame(flushFollowTarget);
+        followRafRef.current = requestAnimationFrame(stepFollow);
       }
     },
-    [flushFollowTarget],
+    [stepFollow],
   );
 
   const followActiveAssistantRow = useCallback(() => {
@@ -430,17 +571,14 @@ function useChatScroll(listTrailingSlackPx: number) {
         metrics.offsetY + POST_SEND_NUDGE_PX,
         maxOffset,
       );
-      metricsRef.current.offsetY = newOffset;
-      listRef.current?.scrollToOffset({ offset: newOffset, animated: true });
-
-      const nextDist = Math.max(0, height - newOffset - metrics.layoutHeight);
-      setAwayFromBottom(
-        height > metrics.layoutHeight + 2 && nextDist > awayFromBottomLimit,
-      );
+      // Gentle one-shot ease-out on the shared spring loop. If the reply starts
+      // streaming mid-nudge, its (non-gentle) target update takes over the same
+      // loop — the two motions blend instead of fighting separate animations.
+      setFollowTarget(newOffset, true);
     };
 
     requestAnimationFrame(() => requestAnimationFrame(applyNudge));
-  }, [awayFromBottomLimit, nearBottomLimit, stopFollowLoop]);
+  }, [nearBottomLimit, setFollowTarget, stopFollowLoop]);
 
   return {
     listRef,

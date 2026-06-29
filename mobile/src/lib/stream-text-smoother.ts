@@ -1,7 +1,24 @@
-const STREAM_REVEAL_INTERVAL_MS = 24;
-const STREAM_BASE_CHARS_PER_TICK = 2;
-const STREAM_FAST_CHARS_PER_TICK = 6;
-const STREAM_FAST_BACKLOG_CHARS = 160;
+/**
+ * Frame-paced reveal of streamed assistant chat text.
+ *
+ * Provider deltas arrive in bursts (one token, then a 40-char clump, then a
+ * stall), so appending each delta 1:1 to the rendered message makes the text
+ * lurch. This smoother buffers inbound text and meters it out on a
+ * requestAnimationFrame loop so reveals land on display-refresh boundaries
+ * (smoother than a free-running `setTimeout`). The release rate is adaptive: a
+ * steady floor of a couple code points per frame while the buffer is small,
+ * scaling up so any backlog drains within a fixed number of frames. The buffer
+ * therefore can never lag meaningfully behind the model, yet a slow trickle
+ * still reads as smooth typing.
+ *
+ * Mirrors desktop's `useStreamTextPacer`. Splits on code points so a surrogate
+ * pair (emoji) is never revealed half-formed mid-frame.
+ */
+
+/** Steady floor of code points released per frame while the buffer is non-empty. */
+const STREAM_MIN_CHARS_PER_FRAME = 2;
+/** Any backlog drains over at most this many frames (~100ms at 60fps). */
+const STREAM_CATCH_UP_FRAMES = 6;
 
 type StreamTextSmootherOptions = {
   appendText: (text: string) => void;
@@ -17,41 +34,45 @@ export type StreamTextSmoother = {
 export function createStreamTextSmoother({
   appendText,
 }: StreamTextSmootherOptions): StreamTextSmoother {
-  let pending = "";
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  // Buffered code points awaiting reveal. Kept as an array so we never re-scan
+  // the whole pending string for surrogate pairs every frame.
+  let pending: string[] = [];
+  let frame: ReturnType<typeof requestAnimationFrame> | null = null;
   let cancelled = false;
   const drainWaiters = new Set<() => void>();
 
-  const clearTimer = () => {
-    if (!timer) return;
-    clearTimeout(timer);
-    timer = null;
+  const clearFrame = () => {
+    if (frame === null) return;
+    cancelAnimationFrame(frame);
+    frame = null;
   };
 
   const resolveDrainWaiters = () => {
-    if (pending.length > 0 || timer) return;
+    if (pending.length > 0 || frame !== null) return;
     const waiters = Array.from(drainWaiters);
     drainWaiters.clear();
     for (const resolve of waiters) resolve();
   };
 
   const schedule = () => {
-    if (cancelled || timer || pending.length === 0) return;
-    timer = setTimeout(tick, STREAM_REVEAL_INTERVAL_MS);
+    if (cancelled || frame !== null || pending.length === 0) return;
+    frame = requestAnimationFrame(tick);
   };
 
   const tick = () => {
-    timer = null;
+    frame = null;
     if (cancelled || pending.length === 0) {
       resolveDrainWaiters();
       return;
     }
 
-    const take =
-      pending.length >= STREAM_FAST_BACKLOG_CHARS
-        ? STREAM_FAST_CHARS_PER_TICK
-        : STREAM_BASE_CHARS_PER_TICK;
-    const next = pending.slice(0, take);
+    // Steady floor, scaling up so the current backlog clears within
+    // STREAM_CATCH_UP_FRAMES — bursts catch up fast, trickles stay gentle.
+    const take = Math.max(
+      STREAM_MIN_CHARS_PER_FRAME,
+      Math.ceil(pending.length / STREAM_CATCH_UP_FRAMES),
+    );
+    const next = pending.slice(0, take).join("");
     pending = pending.slice(take);
     appendText(next);
     schedule();
@@ -61,12 +82,13 @@ export function createStreamTextSmoother({
   return {
     push(delta: string) {
       if (cancelled || delta.length === 0) return;
-      pending += delta;
+      // Spread to code points so multi-unit glyphs never split across frames.
+      for (const ch of delta) pending.push(ch);
       schedule();
     },
     drain() {
       if (cancelled || pending.length === 0) {
-        clearTimer();
+        clearFrame();
         return Promise.resolve();
       }
       schedule();
@@ -76,20 +98,20 @@ export function createStreamTextSmoother({
       });
     },
     flushNow() {
-      clearTimer();
+      clearFrame();
       if (cancelled || pending.length === 0) {
         resolveDrainWaiters();
         return;
       }
-      const next = pending;
-      pending = "";
+      const next = pending.join("");
+      pending = [];
       appendText(next);
       resolveDrainWaiters();
     },
     cancel() {
       cancelled = true;
-      pending = "";
-      clearTimer();
+      pending = [];
+      clearFrame();
       resolveDrainWaiters();
     },
   };
