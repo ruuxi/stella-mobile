@@ -26,6 +26,21 @@ import { useDictation } from "../lib/dictation";
 import { speakReply, stopReadAloud, useReadAloudState } from "../lib/read-aloud";
 import { carPlaySession, type CarPlayPhase } from "./carplay-session";
 
+/**
+ * Grace window for the assistant reply row that can land a render tick after
+ * `sending` flips false. We keep watching `messages` this long before giving
+ * up on speaking, so a late read-back isn't silently dropped.
+ */
+const REPLY_GRACE_MS = 1500;
+/**
+ * Insurance for the (today unreachable) case where `send()` early-returns
+ * without starting a turn — e.g. storage not loaded, empty text, or AI consent
+ * not yet granted. `sending` never flips true, so the turn-finished effect
+ * never runs; if no turn materializes within this window we reset to idle
+ * rather than hanging "thinking" on the head unit.
+ */
+const SEND_START_TIMEOUT_MS = 1500;
+
 export function CarPlayBridge() {
   // CarPlay is iOS-only; `Platform.OS` is constant at runtime, so this gate is
   // stable and never changes the hook order below.
@@ -53,6 +68,21 @@ function CarPlayBridgeIOS() {
   const prevSendingRef = useRef(false);
   const lastReplyTextRef = useRef("");
   const phaseRef = useRef<CarPlayPhase>("idle");
+  // Latest `messages` snapshot for reads outside render (grace timer/effect).
+  const messagesRef = useRef(messages);
+  // Mirror of `sending` for the send-start guard timer.
+  const sendingRef = useRef(sending);
+  // Id of the newest assistant reply that existed *before* the current turn, so
+  // the grace re-check only speaks a genuinely new reply, never a stale one.
+  const priorReplyIdRef = useRef<string | null>(null);
+  // While true, we're still watching `messages` for this turn's reply to land.
+  const watchingReplyRef = useRef(false);
+  const replyGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Single entry point for phase changes so we keep a local mirror (the session
   // is imperative and doesn't expose its phase back to React).
@@ -60,6 +90,29 @@ function CarPlayBridgeIOS() {
     phaseRef.current = phase;
     carPlaySession.setPhase(phase);
   }, []);
+
+  const clearReplyGrace = useCallback(() => {
+    watchingReplyRef.current = false;
+    if (replyGraceTimerRef.current) {
+      clearTimeout(replyGraceTimerRef.current);
+      replyGraceTimerRef.current = null;
+    }
+  }, []);
+
+  // Speak this turn's assistant reply if it has actually landed. Returns false
+  // when no *new* reply (one past `priorReplyIdRef`) is present yet, so callers
+  // can keep waiting instead of giving up.
+  const trySpeakLatestReply = useCallback(() => {
+    const reply = [...messagesRef.current]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.text.trim().length > 0);
+    if (!reply || reply.id === priorReplyIdRef.current) return false;
+    lastReplyTextRef.current = reply.text;
+    carPlaySession.setReplyPreview(reply.text);
+    goPhase("speaking");
+    void speakReply(reply.text, reply.id);
+    return true;
+  }, [goPhase]);
 
   useEffect(() => {
     if (!guest) return;
@@ -136,45 +189,92 @@ function CarPlayBridgeIOS() {
     if (sending) return;
     pendingSendRef.current = null;
     awaitingReplyRef.current = true;
+    // Snapshot the newest existing reply so the turn-finished/grace path only
+    // speaks a genuinely new one.
+    const priorReply = [...messagesRef.current]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.text.trim().length > 0);
+    priorReplyIdRef.current = priorReply?.id ?? null;
     send();
-  }, [thread.draft, storageLoaded, sending, send]);
+    // If `send()` no-ops (no turn ever starts), `sending` never flips true and
+    // the turn-finished effect never runs — don't hang on "thinking".
+    if (sendStartTimerRef.current) clearTimeout(sendStartTimerRef.current);
+    sendStartTimerRef.current = setTimeout(() => {
+      sendStartTimerRef.current = null;
+      if (!awaitingReplyRef.current || sendingRef.current) return;
+      awaitingReplyRef.current = false;
+      if (
+        phaseRef.current === "thinking" ||
+        phaseRef.current === "listening"
+      ) {
+        goPhase("idle");
+      }
+    }, SEND_START_TIMEOUT_MS);
+  }, [thread.draft, storageLoaded, sending, send, goPhase]);
+
+  // Mirror `sending` and cancel the send-start guard the moment a real turn
+  // begins (so the guard only ever fires for a send that never started).
+  useEffect(() => {
+    sendingRef.current = sending;
+    if (sending && sendStartTimerRef.current) {
+      clearTimeout(sendStartTimerRef.current);
+      sendStartTimerRef.current = null;
+    }
+  }, [sending]);
 
   // When a turn finishes, grab the assistant reply, auto-speak it, and surface
-  // the now-playing replay card.
+  // the now-playing replay card. The reply row can land a render tick after
+  // `sending` flips false, so if it isn't here yet we keep watching `messages`
+  // for a short grace window before falling back to idle.
   useEffect(() => {
     const wasSending = prevSendingRef.current;
     prevSendingRef.current = sending;
     if (!(wasSending && !sending && awaitingReplyRef.current)) return;
     awaitingReplyRef.current = false;
+    if (trySpeakLatestReply()) return;
 
-    const reply = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && m.text.trim().length > 0);
-    if (!reply) {
-      goPhase("idle");
-      return;
-    }
-    lastReplyTextRef.current = reply.text;
-    carPlaySession.setReplyPreview(reply.text);
-    goPhase("speaking");
-    void speakReply(reply.text, reply.id);
-  }, [sending, messages, goPhase]);
+    watchingReplyRef.current = true;
+    if (replyGraceTimerRef.current) clearTimeout(replyGraceTimerRef.current);
+    replyGraceTimerRef.current = setTimeout(() => {
+      replyGraceTimerRef.current = null;
+      if (!watchingReplyRef.current) return;
+      watchingReplyRef.current = false;
+      if (!trySpeakLatestReply() && phaseRef.current === "thinking") {
+        goPhase("idle");
+      }
+    }, REPLY_GRACE_MS);
+  }, [sending, trySpeakLatestReply, goPhase]);
+
+  // While in the grace window, retry as soon as a new `messages` snapshot lands.
+  useEffect(() => {
+    if (!watchingReplyRef.current) return;
+    if (trySpeakLatestReply()) clearReplyGrace();
+  }, [messages, trySpeakLatestReply, clearReplyGrace]);
 
   // Safety net: if dictation ends without producing a turn (silence, denied
   // mic, or a cancelled recording), don't leave the listening/thinking surface
   // stuck — fall back to idle. Guarded so it never disturbs a live reply.
   useEffect(() => {
     if (dictation.status !== "idle") return;
-    if (pendingSendRef.current || awaitingReplyRef.current) return;
+    if (
+      pendingSendRef.current ||
+      awaitingReplyRef.current ||
+      watchingReplyRef.current
+    ) {
+      return;
+    }
     if (phaseRef.current === "listening" || phaseRef.current === "thinking") {
       goPhase("idle");
     }
   }, [dictation.status, goPhase]);
 
-  // Stop any in-flight speech if CarPlay drops mid-reply.
+  // Stop any in-flight speech if CarPlay drops mid-reply, and clear pending
+  // timers so they can't fire against a torn-down component.
   useEffect(() => {
     return () => {
       stopReadAloud();
+      if (replyGraceTimerRef.current) clearTimeout(replyGraceTimerRef.current);
+      if (sendStartTimerRef.current) clearTimeout(sendStartTimerRef.current);
     };
   }, []);
 
