@@ -290,7 +290,7 @@ function ComputerChatSurface({
       <ChatPane
         messages={thread.messages}
         streaming={thread.sending}
-        workingStatus={thread.workingStatus}
+        workingIndicator={thread.workingIndicator}
         emptyContent={
           <Text style={styles.emptyText}>Ask your computer anything</Text>
         }

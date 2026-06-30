@@ -56,6 +56,7 @@ import {
   WorkingIndicator,
   WORKING_INDICATOR_SLOT_HEIGHT,
 } from "./WorkingIndicator";
+import type { WorkingIndicatorState } from "./working-indicator-state";
 import { useDictation } from "../lib/dictation";
 import { useChatSearch } from "../lib/chat-search";
 import { notifySuccess, tapMedium, tapLight } from "../lib/haptics";
@@ -1629,10 +1630,10 @@ export type ChatPaneProps = {
   /** True while a reply is streaming — controls composer stop button. */
   streaming: boolean;
   /**
-   * Explicit working-indicator status (e.g. "Waking your computer"). Falls
-   * back to the desktop-parity reasoning copy when unset.
+   * Live working-indicator props derived from the run (active state + the
+   * dynamic, tool-aware label), mirroring the desktop indicator.
    */
-  workingStatus?: string;
+  workingIndicator?: WorkingIndicatorState;
   /** Shows a quiet offline notice above the composer. */
   offline?: boolean;
   /** Empty-state body. Rendered centered when there are no messages. */
@@ -1696,7 +1697,7 @@ export type ChatPaneProps = {
 export function ChatPane({
   messages,
   streaming,
-  workingStatus,
+  workingIndicator,
   offline = false,
   emptyContent,
   historyLoading = false,
@@ -2251,10 +2252,17 @@ export function ChatPane({
   const listFooter = useMemo(
     () => (
       <View style={styles.chatTail}>
-        <WorkingIndicator active={streaming} status={workingStatus} />
+        <WorkingIndicator
+          active={workingIndicator?.active ?? streaming}
+          exitImmediately={workingIndicator?.exitImmediately}
+          status={workingIndicator?.status}
+          toolName={workingIndicator?.toolName}
+          toolCallId={workingIndicator?.toolCallId}
+          isReasoning={workingIndicator?.isReasoning ?? true}
+        />
       </View>
     ),
-    [streaming, workingStatus, styles.chatTail],
+    [streaming, workingIndicator, styles.chatTail],
   );
 
   // Search shows a separate results menu that overlays the chat (the chat
@@ -2737,7 +2745,7 @@ export function ChatPane({
                     </Pressable>
                   )}
                 </View>
-                {isExpandedComposed ? (
+                {isExpandedComposed && !dictationBelow ? (
                   <View style={styles.toolbar}>
                     <View style={styles.toolbarLeft}>{plusButton}</View>
                     <View style={styles.toolbarRight}>

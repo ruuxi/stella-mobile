@@ -41,6 +41,12 @@ interface WorkingIndicatorProps {
   toolName?: string;
   toolCallId?: string;
   isReasoning?: boolean;
+  /**
+   * Skip the brief exit hold when deactivating. Set once answer text starts
+   * streaming so the indicator gets out of the way immediately instead of
+   * trailing the growing reply (mirrors the desktop handoff).
+   */
+  exitImmediately?: boolean;
 }
 
 const SHIMMER_DURATION_MS = 1600;
@@ -289,16 +295,28 @@ export const WorkingIndicator = memo(function WorkingIndicator({
   toolName,
   toolCallId,
   isReasoning = true,
+  exitImmediately = false,
 }: WorkingIndicatorProps) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { viewport, display } = indicatorLayout;
-  const displayStatus = computeWorkingIndicatorStatus({
+  // Per-activation seed so the no-tool reasoning/idle label varies across
+  // turns instead of always reading "Thinking" (mirrors the desktop's
+  // `reasoningSeed`). Refreshed on each rising edge of `active` below.
+  const [reasoningSeed, setReasoningSeed] = useState(() => String(Date.now()));
+  const wasActiveRef = useRef(active);
+  const liveStatus = computeWorkingIndicatorStatus({
     status,
     toolName,
-    seed: toolCallId,
+    seed: toolCallId ?? reasoningSeed,
     isReasoning,
   });
+  // Snapshot the label while active so the exit animation shows a stable
+  // last-known phrase even though the upstream activity clears the moment
+  // `active` flips false (mirrors the desktop's frozen props).
+  const frozenStatusRef = useRef(liveStatus);
+  if (active) frozenStatusRef.current = liveStatus;
+  const displayStatus = active ? liveStatus : frozenStatusRef.current;
   const [renderShell, setRenderShell] = useState(active);
   const shellProgress = useRef(new Animated.Value(active ? 1 : 0)).current;
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -318,6 +336,8 @@ export const WorkingIndicator = memo(function WorkingIndicator({
 
     if (active) {
       clearTimers();
+      if (!wasActiveRef.current) setReasoningSeed(String(Date.now()));
+      wasActiveRef.current = true;
       setRenderShell(true);
       Animated.timing(shellProgress, {
         toValue: 1,
@@ -328,9 +348,10 @@ export const WorkingIndicator = memo(function WorkingIndicator({
       return clearTimers;
     }
 
+    wasActiveRef.current = false;
     if (!renderShell) return clearTimers;
 
-    holdTimerRef.current = setTimeout(() => {
+    const startExit = () => {
       holdTimerRef.current = null;
       Animated.timing(shellProgress, {
         toValue: 0,
@@ -342,10 +363,19 @@ export const WorkingIndicator = memo(function WorkingIndicator({
         leaveTimerRef.current = null;
         setRenderShell(false);
       }, EXIT_ANIMATION_MS);
-    }, EXIT_HOLD_MS);
+    };
+
+    // Skip the hold when answer text has started streaming so the indicator
+    // doesn't trail the growing reply; otherwise hold briefly so a fast turn
+    // still flashes the indicator.
+    if (exitImmediately) {
+      startExit();
+    } else {
+      holdTimerRef.current = setTimeout(startExit, EXIT_HOLD_MS);
+    }
 
     return clearTimers;
-  }, [active, renderShell, shellProgress]);
+  }, [active, exitImmediately, renderShell, shellProgress]);
 
   const shellStyle = useMemo(
     () => ({ opacity: shellProgress }),

@@ -12,6 +12,7 @@ import { ShimmerText } from "./ShimmerText";
 import { CONTENT_MAX_FONT_SCALE } from "../lib/setup-text-defaults";
 import type { Colors } from "../theme/colors";
 import { fonts } from "../theme/fonts";
+import { fadeHex } from "../theme/oklch";
 import type { MobileTask } from "../types";
 
 const SHIMMER_MS = 1900;
@@ -219,7 +220,10 @@ const makeTrayStyles = (colors: Colors) =>
   StyleSheet.create({
     backdrop: {
       ...StyleSheet.absoluteFillObject,
-      backgroundColor: colors.overlay,
+      // `colors.overlay` is an opaque blended hex, so using it raw paints a
+      // solid block over everything above the sheet. Fade it to a translucent
+      // scrim so the chat behind the tray stays visible (just dimmed).
+      backgroundColor: fadeHex(colors.overlay, 0.4),
     },
     sheet: {
       position: "absolute",

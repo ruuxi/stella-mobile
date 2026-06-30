@@ -94,7 +94,7 @@ export default function ChatScreen() {
       <ChatPane
         messages={thread.messages}
         streaming={thread.sending}
-        workingStatus={thread.workingStatus}
+        workingIndicator={thread.workingIndicator}
         emptyContent={<Text style={styles.emptyText}>Ask Stella anything</Text>}
         historyLoading={!thread.storageLoaded}
         draft={thread.draft}

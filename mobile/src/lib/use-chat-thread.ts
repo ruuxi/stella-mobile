@@ -15,9 +15,16 @@ import {
   DesktopOfflineError,
   sendDesktopBridgeChat,
   syncDesktopBridgeChatMessages,
+  type DesktopBridgeActivity,
   type DesktopBridgeAttachment,
   type DesktopBridgeSendStatus,
 } from "./desktop-bridge-chat";
+import {
+  buildWorkingIndicatorState,
+  IDLE_WORKING_ACTIVITY,
+  type WorkingActivity,
+  type WorkingIndicatorState,
+} from "../components/working-indicator-state";
 import { mergeMessagesById, reconcileSentDesktopTurn } from "./chat-merge";
 import { createStreamTextSmoother } from "./stream-text-smoother";
 import { userFacingError } from "./user-facing-error";
@@ -81,7 +88,8 @@ export type ChatThread = {
     React.SetStateAction<ImagePicker.ImagePickerAsset[]>
   >;
   sending: boolean;
-  workingStatus: string | undefined;
+  /** Live working-indicator props — active/label reflect the current step. */
+  workingIndicator: WorkingIndicatorState;
   storageLoaded: boolean;
   /** Recent artifacts in the conversation, newest first and de-duplicated. */
   conversationArtifacts: ChatArtifact[];
@@ -112,7 +120,16 @@ export function useChatThread(opts: {
     ImagePicker.ImagePickerAsset[]
   >([]);
   const [sending, setSending] = useState(false);
-  const [workingStatus, setWorkingStatus] = useState<string | undefined>();
+  const [workingActivity, setWorkingActivity] = useState<WorkingActivity>(
+    IDLE_WORKING_ACTIVITY,
+  );
+
+  // Merge a partial activity update onto the live snapshot. Run-level status
+  // (wake copy, compaction) and the bridge's tool/streaming signals patch in
+  // independently, so callers only set the fields they own.
+  const patchActivity = useCallback((patch: Partial<WorkingActivity>) => {
+    setWorkingActivity((current) => ({ ...current, ...patch }));
+  }, []);
 
   const queueRef = useRef<QueuedSend[]>([]);
   const stoppedDispatchIdsRef = useRef<Set<string>>(new Set());
@@ -273,7 +290,7 @@ export function useChatThread(opts: {
 
   const finishDispatch = useCallback(() => {
     setSending(false);
-    setWorkingStatus(undefined);
+    setWorkingActivity(IDLE_WORKING_ACTIVITY);
     drainQueueRef.current?.();
   }, []);
 
@@ -336,7 +353,13 @@ export function useChatThread(opts: {
             history,
             images: imagesPayload,
           },
-          (delta) => textSmoother.push(delta),
+          (delta) => {
+            // Cloud turns have no tool stream — the only signal is answer
+            // text, so mark streaming as soon as a non-empty delta lands to
+            // retire the "thinking" indicator (matching desktop behaviour).
+            if (/\S/.test(delta)) patchActivity({ isStreamingText: true });
+            textSmoother.push(delta);
+          },
           streamOptions,
         );
         await textSmoother.drain();
@@ -368,7 +391,7 @@ export function useChatThread(opts: {
         finishDispatch();
       }
     },
-    [appendAssistantText, finishDispatch, transport],
+    [appendAssistantText, finishDispatch, patchActivity, transport],
   );
 
   // ─── Desktop dispatch ─────────────────────────────────────────────────────
@@ -389,7 +412,7 @@ export function useChatThread(opts: {
         // also wakes the desktop) so the landing sync's merge can't interleave
         // with this turn's stream. If that wake already proved the desktop is
         // offline, surface it now rather than spending a second wake budget.
-        setWorkingStatus(WAKE_STATUS_COPY.connecting);
+        patchActivity({ statusText: WAKE_STATUS_COPY.connecting });
         const synced = await runDesktopSync();
         if (stoppedDispatchIdsRef.current.has(item.dispatchId)) {
           activeDispatchRef.current = null;
@@ -406,12 +429,29 @@ export function useChatThread(opts: {
           signal: abort.signal,
           onStatus: (status) => {
             if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
-            setWorkingStatus(WAKE_STATUS_COPY[status]);
+            // Connection/wake copy is a run-level status; merge it without
+            // disturbing the live tool/streaming flags.
+            patchActivity({ statusText: WAKE_STATUS_COPY[status] });
+          },
+          onActivity: (activity: DesktopBridgeActivity) => {
+            if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
+            // The bridge already folded the tool/stream events into a settled
+            // snapshot; adopt it wholesale so the indicator tracks the run.
+            setWorkingActivity({
+              ...(activity.toolName ? { toolName: activity.toolName } : {}),
+              ...(activity.toolCallId
+                ? { toolCallId: activity.toolCallId }
+                : {}),
+              ...(activity.statusText
+                ? { statusText: activity.statusText }
+                : {}),
+              isStreamingText: activity.isStreamingText,
+              hasToolActivity: activity.hasToolActivity,
+            });
           },
           onTextDelta: (delta) => {
             if (stoppedDispatchIdsRef.current.has(item.dispatchId)) return;
             sawDelta = true;
-            setWorkingStatus(undefined);
             textSmoother.push(delta);
           },
           onArtifacts: (artifacts) => {
@@ -505,7 +545,6 @@ export function useChatThread(opts: {
           e instanceof DesktopOfflineError && !sawDelta
             ? "Your computer is offline. Wake it from the menu, then try again."
             : userFacingError(e);
-        setWorkingStatus(undefined);
         setMessages((m) =>
           m.map((msg) =>
             msg.id === replyId ? { ...msg, text: msg.text || message } : msg,
@@ -516,7 +555,13 @@ export function useChatThread(opts: {
         textSmoother.cancel();
       }
     },
-    [appendAssistantText, finishDispatch, persistSyncState, runDesktopSync],
+    [
+      appendAssistantText,
+      finishDispatch,
+      patchActivity,
+      persistSyncState,
+      runDesktopSync,
+    ],
   );
 
   // ─── Queue & dispatch ─────────────────────────────────────────────────────
@@ -529,6 +574,9 @@ export function useChatThread(opts: {
         replyId,
         abort,
       };
+      // Fresh turn — clear any activity left over from the previous reply so
+      // the indicator starts from the pre-tool "thinking" state.
+      setWorkingActivity(IDLE_WORKING_ACTIVITY);
       // Promote the queued bubble out of the dimmed state and add an empty
       // assistant placeholder beside it.
       setMessages((m) => [
@@ -633,8 +681,13 @@ export function useChatThread(opts: {
       activeDispatchRef.current = null;
     }
     setSending(false);
-    setWorkingStatus(undefined);
+    setWorkingActivity(IDLE_WORKING_ACTIVITY);
   }, []);
+
+  const workingIndicator = useMemo(
+    () => buildWorkingIndicatorState({ sending, activity: workingActivity }),
+    [sending, workingActivity],
+  );
 
   const conversationArtifacts = useMemo(() => {
     const seen = new Set<string>();
@@ -678,7 +731,7 @@ export function useChatThread(opts: {
     attachments,
     setAttachments,
     sending,
-    workingStatus,
+    workingIndicator,
     storageLoaded,
     conversationArtifacts,
     conversationTasks,

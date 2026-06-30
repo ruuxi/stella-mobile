@@ -69,6 +69,20 @@ export type DesktopBridgeAttachment = {
   mimeType?: string;
 };
 
+/**
+ * Live working-indicator inputs derived from the run's agent events, mirroring
+ * the desktop streaming store. Emitted on every tool-start / tool-end / status
+ * / first answer-text chunk so the mobile indicator can reflect the current
+ * activity and step aside once the reply starts streaming.
+ */
+export type DesktopBridgeActivity = {
+  toolName?: string;
+  toolCallId?: string;
+  statusText?: string;
+  isStreamingText: boolean;
+  hasToolActivity: boolean;
+};
+
 type DesktopBridgeChatArgs = {
   access: StoredPhoneAccess;
   message: string;
@@ -77,6 +91,7 @@ type DesktopBridgeChatArgs = {
   signal?: AbortSignal;
   onStatus?: (status: DesktopBridgeSendStatus) => void;
   onTextDelta?: (delta: string) => void;
+  onActivity?: (activity: DesktopBridgeActivity) => void;
   onArtifacts?: (artifacts: ChatArtifact[]) => void;
 };
 
@@ -966,6 +981,7 @@ export async function sendDesktopBridgeChat({
   signal,
   onStatus,
   onTextDelta,
+  onActivity,
   onArtifacts,
 }: DesktopBridgeChatArgs): Promise<DesktopBridgeChatResult> {
   const text = message.trim();
@@ -1006,6 +1022,25 @@ export async function sendDesktopBridgeChat({
   let settled = false;
   let finalResult: DesktopBridgeChatResult | null = null;
   let finalError: unknown = null;
+
+  // ── Live working-indicator activity (mirrors the desktop streaming store) ─
+  // `activeToolCalls` is insertion-ordered so the "last" entry is the most
+  // recent in-flight tool, matching the desktop's `Object.entries(...).at(-1)`.
+  const activeToolCalls = new Map<string, { toolName: string }>();
+  let activityStatusText: string | undefined;
+  let activityStreamingText = false;
+  let activityHasToolActivity = false;
+
+  const emitActivity = () => {
+    const lastEntry = [...activeToolCalls.entries()].at(-1);
+    onActivity?.({
+      ...(lastEntry ? { toolName: lastEntry[1].toolName } : {}),
+      ...(lastEntry ? { toolCallId: lastEntry[0] } : {}),
+      ...(activityStatusText ? { statusText: activityStatusText } : {}),
+      isStreamingText: activityStreamingText,
+      hasToolActivity: activityHasToolActivity,
+    });
+  };
 
   const artifactById = new Map<string, ChatArtifact>();
   const mergeArtifacts = (artifacts: ChatArtifact[]) => {
@@ -1113,7 +1148,61 @@ export async function sendDesktopBridgeChat({
 
     if (event.type === "stream") {
       const chunk = asString(event.chunk);
-      if (chunk) onTextDelta?.(chunk);
+      if (chunk) {
+        onTextDelta?.(chunk);
+        // Mark the run as streaming answer text so the indicator steps aside,
+        // and clear any lingering run-level status (mirrors the desktop
+        // `run-status: null` on STREAM).
+        if (/\S/.test(chunk)) {
+          activityStreamingText = true;
+          activityStatusText = undefined;
+          emitActivity();
+        }
+      }
+      return false;
+    }
+    if (event.type === "tool-start") {
+      const toolName = asString(event.toolName).trim() || "tool";
+      const toolCallId = asString(event.toolCallId).trim();
+      const statusText = asString(event.statusText).trim();
+      const key = toolCallId || toolName;
+      activityHasToolActivity = true;
+      // The model stopped emitting text to run a tool; clear the streaming-text
+      // flag so the post-tool reasoning gap shows the indicator again.
+      activityStreamingText = false;
+      if (statusText) activityStatusText = statusText;
+      activeToolCalls.set(key, { toolName });
+      emitActivity();
+      return false;
+    }
+    if (event.type === "tool-end") {
+      const toolName = asString(event.toolName).trim();
+      const toolCallId = asString(event.toolCallId).trim();
+      activityHasToolActivity = true;
+      // Resolve the entry this end refers to, tolerant of a missing/renamed
+      // id, so a phantom entry can't pin a tool active forever.
+      let key = toolCallId && activeToolCalls.has(toolCallId)
+        ? toolCallId
+        : undefined;
+      if (!key && toolName) {
+        for (const [k, v] of activeToolCalls) {
+          if (v.toolName === toolName) key = k;
+        }
+      }
+      if (!key) key = [...activeToolCalls.keys()].at(-1);
+      if (key) activeToolCalls.delete(key);
+      if (activeToolCalls.size === 0) activityStatusText = undefined;
+      emitActivity();
+      return false;
+    }
+    if (event.type === "status") {
+      // `provider-retry` is a transient reconnect notice on the desktop; don't
+      // surface it as a working-indicator label.
+      if (asString(event.statusState) !== "provider-retry") {
+        const statusText = asString(event.statusText).trim();
+        activityStatusText = statusText || undefined;
+        emitActivity();
+      }
       return false;
     }
     if (event.type === "run-finished") {
