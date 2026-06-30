@@ -794,6 +794,30 @@ const AssistantActions = memo(function AssistantActions({
 /** Anchor passed to the message-actions popover (the long-press point). */
 type MessageMenuRequest = { message: ChatMessage; anchor: AnchorRect };
 
+/**
+ * Id/canonicalId suffixes the desktop uses for the synthetic stand-in rows it
+ * parks early artifacts on (artifacts that fire before the assistant text):
+ * `${userMsgId}:artifacts` and `${userMsgId}:agent`. These rows are transient —
+ * the same cards re-home onto the real persisted assistant row once it arrives.
+ */
+const STAND_IN_ARTIFACT_ID_SUFFIXES = [":artifacts", ":agent"];
+
+/**
+ * Artifact cards only render once their owning assistant message is finalized.
+ * A row is still in-flight (and must NOT show cards) when it's the synthetic
+ * stand-in the desktop emits for early artifacts. Suppressing it — together
+ * with the streaming reply (gated separately via `isStreaming`) — both matches
+ * the "artifacts only on the finished message" behaviour and removes the
+ * duplicated-card bug at the source, since mobile's append-only merge never
+ * evicts the stand-in once the real assistant row lands.
+ */
+const isStandInArtifactRow = (message: ChatMessage): boolean =>
+  STAND_IN_ARTIFACT_ID_SUFFIXES.some(
+    (suffix) =>
+      message.id.endsWith(suffix) ||
+      (message.canonicalId?.endsWith(suffix) ?? false),
+  );
+
 const ChatMessageRow = memo(function ChatMessageRow({
   item,
   styles,
@@ -882,8 +906,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const hasAgentWork = artifacts.some(
     (artifact) => artifact.payload.kind === "agent-work",
   );
+  // Only ever show artifact cards on the finalized assistant message. While the
+  // turn runs they're suppressed on the streaming reply and on the synthetic
+  // stand-in rows; the real persisted row shows them once it arrives.
   const showArtifacts =
-    hasAgentWork || (Boolean(onOpenArtifact) && artifacts.length > 0);
+    !isStreaming &&
+    !isStandInArtifactRow(item) &&
+    (hasAgentWork || (Boolean(onOpenArtifact) && artifacts.length > 0));
   const toolActivity = item.toolSteps
     ? deriveToolActivity(item.toolSteps)
     : undefined;
