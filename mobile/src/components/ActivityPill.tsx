@@ -21,8 +21,9 @@ const runningCountOf = (tasks: MobileTask[]) =>
 
 /**
  * Activity pill above the composer (mobile port of the desktop
- * `ComposerActivityPill`). Shimmers a live count while background work runs and
- * opens the activity tray on tap. Hidden when there's no work to show.
+ * `ComposerActivityPill`). It's a live indicator: it shimmers a running count
+ * and opens the activity tray on tap. Renders nothing unless at least one task
+ * is actually running — no idle/empty pill.
  */
 export function ActivityPill({
   tasks,
@@ -35,12 +36,11 @@ export function ActivityPill({
 }) {
   const styles = useMemo(() => makePillStyles(colors), [colors]);
   const running = runningCountOf(tasks);
-  const isRunning = running > 0;
-  const label = isRunning
-    ? running > 1
-      ? `${running} in progress`
-      : "Task in progress"
-    : "Activity";
+  // Only surface the pill while work is actually in flight; when nothing is
+  // active it disappears entirely rather than lingering as a static chip.
+  if (running === 0) return null;
+  const label =
+    running > 1 ? `${running} in progress` : "Task in progress";
 
   return (
     <Pressable
@@ -50,27 +50,15 @@ export function ActivityPill({
       accessibilityLabel="Open activity"
       hitSlop={6}
     >
-      {!isRunning ? (
-        <Icon name="cpu" size={13} color={colors.textMuted} />
-      ) : null}
-      {isRunning ? (
-        <ShimmerText
-          text={label}
-          active
-          color={colors.text}
-          textStyle={styles.label}
-          durationMs={SHIMMER_MS}
-          dimAlpha={0.3}
-        />
-      ) : (
-        <Text
-          style={styles.label}
-          numberOfLines={1}
-          maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
-        >
-          {label}
-        </Text>
-      )}
+      <Icon name="sparkles" size={13} color={colors.accent} effect="pulse" />
+      <ShimmerText
+        text={label}
+        active
+        color={colors.text}
+        textStyle={styles.label}
+        durationMs={SHIMMER_MS}
+        dimAlpha={0.3}
+      />
     </Pressable>
   );
 }

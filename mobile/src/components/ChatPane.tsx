@@ -2202,7 +2202,9 @@ export function ChatPane({
   );
   const dismissMessageMenu = useCallback(() => setMessageMenu(null), []);
   const [activityOpen, setActivityOpen] = useState(false);
-  const hasActivity = (activityTasks?.length ?? 0) > 0;
+  const hasActivity = (activityTasks ?? []).some(
+    (task) => task.status === "running",
+  );
   // Only user messages open this menu now \u2014 assistant messages carry their
   // actions inline (copy / read aloud / share) under the bubble, so the menu
   // just needs copy + share. Read-aloud lives only on the assistant inline row.
