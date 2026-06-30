@@ -16,6 +16,11 @@ import type { MobileTask } from "../types";
 
 const SHIMMER_MS = 1900;
 
+// Stepped bar heights for the level-meter glyph. Uneven, frozen heights read
+// as a live activity meter (signal / processing) rather than a chart, without
+// any motion that would distract.
+const ACTIVITY_BAR_HEIGHTS = [6, 11, 8];
+
 const runningCountOf = (tasks: MobileTask[]) =>
   tasks.reduce((n, task) => (task.status === "running" ? n + 1 : n), 0);
 
@@ -50,7 +55,11 @@ export function ActivityPill({
       accessibilityLabel="Open activity"
       hitSlop={6}
     >
-      <Icon name="sparkles" size={13} color={colors.accent} effect="pulse" />
+      <View style={styles.glyph}>
+        {ACTIVITY_BAR_HEIGHTS.map((height, index) => (
+          <View key={index} style={[styles.glyphBar, { height }]} />
+        ))}
+      </View>
       <ShimmerText
         text={label}
         active
@@ -214,6 +223,18 @@ const makePillStyles = (colors: Colors) =>
       fontFamily: fonts.sans.medium,
       fontSize: 13,
       letterSpacing: -0.1,
+    },
+    glyph: {
+      flexDirection: "row",
+      alignItems: "flex-end",
+      // Fixed footprint so the pill never reflows as bars/labels change.
+      height: 11,
+      gap: 2.5,
+    },
+    glyphBar: {
+      width: 2.5,
+      borderRadius: 1.5,
+      backgroundColor: colors.accent,
     },
   });
 
