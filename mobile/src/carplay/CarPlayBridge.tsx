@@ -97,7 +97,14 @@ function CarPlayBridgeIOS() {
   const onTalk = useCallback(() => {
     if (dictation.status === "idle") {
       goPhase("listening");
-      void dictation.start();
+      // If recording never actually begins (AI consent not yet granted, mic
+      // permission denied, or the recorder failed to start) the dictation
+      // status stays "idle" — so the status-driven safety net below never
+      // re-fires and would strand the listening overlay on the head unit.
+      // Reconcile straight off the start() result instead.
+      void dictation.start().then((started) => {
+        if (!started && phaseRef.current === "listening") goPhase("idle");
+      });
     } else if (dictation.status === "recording") {
       goPhase("thinking");
       void dictation.stop();

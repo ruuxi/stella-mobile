@@ -53,7 +53,8 @@ export type UseDictationResult = {
   isTranscribing: boolean;
   levels: number[];
   elapsedMs: number;
-  start: () => Promise<void>;
+  /** Resolves `true` only if recording actually began (consent + mic granted). */
+  start: () => Promise<boolean>;
   stop: () => Promise<void>;
   cancel: () => Promise<void>;
   toggle: () => Promise<void>;
@@ -119,14 +120,14 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
   }, []);
 
-  const start = useCallback(async () => {
-    if (status !== "idle") return;
+  const start = useCallback(async (): Promise<boolean> => {
+    if (status !== "idle") return false;
     // Apple 5.1.1(i): voice audio is sent to a third-party AI transcription
     // service (Mistral Voxtral). Don't even start the recorder until the
     // user has explicitly agreed to the data-sharing disclosure.
     if (!hasAiConsent()) {
       requestAiConsent();
-      return;
+      return false;
     }
     try {
       const perm = await AudioModule.requestRecordingPermissionsAsync();
@@ -155,7 +156,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
                 },
               ],
         );
-        return;
+        return false;
       }
 
       await setAudioModeAsync({
@@ -174,6 +175,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       setLevels([]);
       setElapsedMs(0);
       safeSetStatus("recording");
+      return true;
     } catch (error) {
       console.warn("[dictation] start failed", error);
       await releaseAudioMode();
@@ -181,6 +183,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         "Voice input",
         "Couldn't start recording. Try again in a moment.",
       );
+      return false;
     }
   }, [recorder, releaseAudioMode, safeSetStatus, status]);
 
