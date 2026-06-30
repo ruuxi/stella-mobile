@@ -103,18 +103,27 @@ class CarPlaySession {
     this.registered = true;
 
     this.CarPlay.registerOnConnect(() => {
-      this.connected = true;
-      this.buildTemplates();
-      this.phase = "idle";
-      this.replayPushed = false;
-      this.voicePresented = false;
+      // This whole callback runs the first time a real head unit hands us its
+      // interface controller. Any throw in here (a template constructor
+      // rejecting its contents, a brand asset that won't resolve, or a CarPlay
+      // API raising on the head unit) is an exception inside a native-event
+      // listener — unguarded it surfaces as an unhandled JS error on connect
+      // and can take the phone app down mid-drive. Keep the entire connect path
+      // fail-safe: on error we leave CarPlay blank rather than crash. Note
+      // `buildTemplates()` and `renderPhase()` were previously outside the
+      // try, so a failure constructing the templates was not contained.
       try {
+        this.connected = true;
+        this.buildTemplates();
+        this.phase = "idle";
+        this.replayPushed = false;
+        this.voicePresented = false;
         this.CarPlay!.setRootTemplate(this.listTemplate!, false);
         this.CarPlay!.enableNowPlaying(true);
+        this.renderPhase();
       } catch (error) {
-        console.warn("[carplay] failed to set root template", error);
+        console.warn("[carplay] connect handler failed", error);
       }
-      this.renderPhase();
     });
 
     this.CarPlay.registerOnDisconnect(() => {
