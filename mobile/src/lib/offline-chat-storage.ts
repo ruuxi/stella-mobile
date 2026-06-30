@@ -3,20 +3,25 @@ import type { ChatMessage } from "../types";
 import { parseChatArtifacts } from "./mobile-artifacts";
 
 /**
- * The two independent chat transcripts. The cloud thread keeps the original
- * key (it was the cloud-only store before chat unification) so existing local
+ * The independent chat transcripts. The cloud thread keeps the original key
+ * (it was the cloud-only store before chat unification) so existing local
  * history stays put; the computer thread gets its own key and re-hydrates from
- * the desktop bridge on mount.
+ * the desktop bridge on mount. The carplay thread is the hands-free voice loop
+ * driven from CarPlay — it rides the same cloud send pipeline but keeps its own
+ * short transcript so the always-mounted CarPlay bridge never races the Chat
+ * tab's "cloud" store.
  */
-export type ChatThreadId = "cloud" | "computer";
+export type ChatThreadId = "cloud" | "computer" | "carplay";
 
 const MESSAGES_KEY: Record<ChatThreadId, string> = {
   cloud: "stella-mobile-offline-chat-v1",
   computer: "stella-mobile-computer-chat-v1",
+  carplay: "stella-mobile-carplay-chat-v1",
 };
 const SYNC_STATE_KEY: Record<ChatThreadId, string> = {
   cloud: "stella-mobile-chat-sync-state-v1",
   computer: "stella-mobile-computer-sync-state-v1",
+  carplay: "stella-mobile-carplay-sync-state-v1",
 };
 const MAX_MESSAGES = 1000;
 

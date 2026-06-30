@@ -35,6 +35,7 @@ import { ShareIntentProvider } from "expo-share-intent";
 import { ThemeProvider } from "../src/theme/theme-context";
 import { ChatSearchProvider } from "../src/lib/chat-search";
 import { ShareIntentHandler } from "../src/lib/share-intent-handler";
+import { CarPlayBridge } from "../src/carplay/CarPlayBridge";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -164,6 +165,7 @@ function AuthenticatedLayout() {
   return (
     <>
       <ShareIntentHandler />
+      <CarPlayBridge />
       <RootStack />
     </>
   );
