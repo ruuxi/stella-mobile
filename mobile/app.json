@@ -3,7 +3,7 @@
     "owner": "stella-ai",
     "name": "Stella",
     "slug": "stella-mobile",
-    "version": "1.0.14",
+    "version": "1.0.15",
     "orientation": "portrait",
     "scheme": "stella-mobile",
     "icon": "./assets/icon.png",
