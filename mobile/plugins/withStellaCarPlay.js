@@ -6,10 +6,14 @@
  * wiring lives here rather than in a hand-edited Xcode project.
  *
  * What it does:
- *   1. Declares a CarPlay template scene in `UIApplicationSceneManifest`. Only
- *      the CarPlay scene role is declared, so the phone UI keeps using the
- *      Expo AppDelegate's window (no risky full scene migration of the phone
- *      app — this is the proven react-native-carplay pattern).
+ *   1. Adds a CarPlay template scene to `UIApplicationSceneManifest` ONLY when a
+ *      phone window scene (`UIWindowSceneSessionRoleApplication`) already exists
+ *      to anchor the app. This Expo project uses the window-based AppDelegate
+ *      (no phone scene delegate), so by default the manifest is left untouched
+ *      and CarPlay no-ops — declaring a CarPlay-only multi-scene manifest would
+ *      orphan the phone's main window and black-screen launch. See
+ *      `withCarPlaySceneManifest` below for the full reasoning. Activating
+ *      CarPlay needs a phone scene delegate (two-scene migration).
  *   2. Writes an Objective-C `StellaCarSceneDelegate` that hands the CarPlay
  *      interface controller to react-native-carplay's `RNCarPlay`, so the JS
  *      template controller (src/carplay) takes over on connect.
@@ -63,18 +67,74 @@ didDisconnectInterfaceController:(CPInterfaceController *)interfaceController
 @end
 `;
 
+const CARPLAY_SCENE_ROLE = "CPTemplateApplicationSceneSessionRoleApplication";
+const PHONE_SCENE_ROLE = "UIWindowSceneSessionRoleApplication";
+
+const CARPLAY_SCENE_CONFIG = {
+  UISceneClassName: "CPTemplateApplicationScene",
+  UISceneConfigurationName: SCENE_CONFIG_NAME,
+  UISceneDelegateClassName: DELEGATE,
+};
+
+/**
+ * Add the CarPlay scene to `UIApplicationSceneManifest` WITHOUT clobbering the
+ * phone app's launch.
+ *
+ * iOS gotcha (the bug this guards against): once a manifest declares
+ * `UIApplicationSupportsMultipleScenes: true` and a `UISceneConfigurations`
+ * dict, the app is treated as scene-based. A manifest that contains ONLY the
+ * CarPlay scene role (and no `UIWindowSceneSessionRoleApplication` phone scene)
+ * orphans the phone's main window — UIKit never connects a window scene for the
+ * app, so the phone launches to a black screen even though the JS bundle and
+ * native modules are fine.
+ *
+ * This Expo project (SDK 55 / new-arch) ships the window-based Swift
+ * AppDelegate (`window = UIWindow(...); factory.startReactNative(in: window)`),
+ * so prebuild produces NO scene manifest by default and there is no phone scene
+ * delegate to merge with. Injecting a CarPlay-only manifest is therefore what
+ * black-screened the phone.
+ *
+ * Behavior:
+ *   - If a phone window scene (`UIWindowSceneSessionRoleApplication`) already
+ *     exists (e.g. a future scene migration adds one), MERGE: preserve it and
+ *     its delegate, and just add the CarPlay scene role.
+ *   - Otherwise, DO NOT enable multi-scene / inject a CarPlay-only manifest;
+ *     leave the manifest untouched so the phone keeps its proven window-based
+ *     launch. CarPlay then simply no-ops (its scene delegate is never
+ *     instantiated) — it can never black-screen the main app.
+ */
 const withCarPlaySceneManifest = (config) =>
   withInfoPlist(config, (cfg) => {
+    const existing = cfg.modResults.UIApplicationSceneManifest;
+    const configs =
+      existing && typeof existing === "object"
+        ? existing.UISceneConfigurations
+        : undefined;
+    const hasPhoneScene =
+      configs &&
+      Array.isArray(configs[PHONE_SCENE_ROLE]) &&
+      configs[PHONE_SCENE_ROLE].length > 0;
+
+    if (!hasPhoneScene) {
+      // No phone window scene to anchor the app: adding a CarPlay-only
+      // multi-scene manifest would orphan the phone window and black-screen
+      // launch. Leave the manifest alone; CarPlay stays inert but safe.
+      console.warn(
+        "[withStellaCarPlay] No UIWindowSceneSessionRoleApplication scene " +
+          "found; skipping CarPlay scene manifest to keep the phone app's " +
+          "window-based launch safe. CarPlay requires a phone scene delegate " +
+          "(two-scene migration) to activate — see CARPLAY.md.",
+      );
+      return cfg;
+    }
+
+    // Merge: preserve the existing phone scene + delegate, add CarPlay role.
     cfg.modResults.UIApplicationSceneManifest = {
+      ...existing,
       UIApplicationSupportsMultipleScenes: true,
       UISceneConfigurations: {
-        CPTemplateApplicationSceneSessionRoleApplication: [
-          {
-            UISceneClassName: "CPTemplateApplicationScene",
-            UISceneConfigurationName: SCENE_CONFIG_NAME,
-            UISceneDelegateClassName: DELEGATE,
-          },
-        ],
+        ...configs,
+        [CARPLAY_SCENE_ROLE]: [CARPLAY_SCENE_CONFIG],
       },
     };
     return cfg;
