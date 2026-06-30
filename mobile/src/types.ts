@@ -148,6 +148,12 @@ export type MobileTask = {
   status: "running" | "completed" | "error" | "canceled";
   /** Live narration while running ("Reading file…"). */
   statusText?: string;
+  /**
+   * Short reasoning summaries for this agent, ordered oldest→newest. Bridged
+   * from the desktop and shown under the agent in the activity tray. May be
+   * absent (older desktop builds) — treat undefined/empty as "no summary".
+   */
+  reasoningSummaries?: string[];
   createdAt: number;
   completedAt?: number;
 };

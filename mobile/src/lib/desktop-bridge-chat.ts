@@ -630,6 +630,11 @@ function parseTasks(value: unknown): MobileTask[] {
       continue;
     }
     const statusText = asString(record.statusText).trim();
+    const reasoningSummaries = Array.isArray(record.reasoningSummaries)
+      ? record.reasoningSummaries
+          .map((summary) => asString(summary).trim())
+          .filter((summary) => summary.length > 0)
+      : [];
     const createdAt =
       typeof record.createdAt === "number" && Number.isFinite(record.createdAt)
         ? record.createdAt
@@ -644,6 +649,7 @@ function parseTasks(value: unknown): MobileTask[] {
       title,
       status: status as MobileTask["status"],
       ...(statusText ? { statusText } : {}),
+      ...(reasoningSummaries.length > 0 ? { reasoningSummaries } : {}),
       createdAt,
       ...(completedAt !== undefined ? { completedAt } : {}),
     });

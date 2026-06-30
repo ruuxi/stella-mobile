@@ -99,6 +99,11 @@ function TaskRow({
     task.status === "running"
       ? task.statusText?.trim() || "Working in background"
       : TERMINAL_SUBTITLE[task.status];
+  // Newest reasoning summary (oldest→newest order), shown under the agent while
+  // it's active. Defensive against the field being absent on older desktops.
+  const reasoningSummary = running
+    ? task.reasoningSummaries?.[task.reasoningSummaries.length - 1]?.trim()
+    : undefined;
 
   return (
     <View style={styles.taskRow}>
@@ -141,6 +146,15 @@ function TaskRow({
         >
           {subtitle}
         </Text>
+        {reasoningSummary ? (
+          <Text
+            style={styles.taskReasoning}
+            numberOfLines={2}
+            maxFontSizeMultiplier={CONTENT_MAX_FONT_SCALE}
+          >
+            {reasoningSummary}
+          </Text>
+        ) : null}
       </View>
     </View>
   );
@@ -309,5 +323,13 @@ const makeTrayStyles = (colors: Colors) =>
       fontSize: 12,
       letterSpacing: -0.1,
       marginTop: 1,
+    },
+    taskReasoning: {
+      color: colors.textMuted,
+      fontFamily: fonts.sans.regular,
+      fontSize: 12,
+      lineHeight: 16,
+      letterSpacing: -0.1,
+      marginTop: 2,
     },
   });
