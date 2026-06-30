@@ -133,6 +133,14 @@ export function useChatThread(opts: {
   // in-flight sync started for the previous computer can't persist its cursor
   // or merge its transcript into the new one.
   const syncGenerationRef = useRef(0);
+  // The just-completed desktop turn's background reconcile (optimistic rows →
+  // canonical ids + cursor advance). It runs fire-and-forget after a turn, but
+  // the next sync MUST wait for it: when a queued send drains immediately on
+  // turn completion, the next turn's wake→sync would otherwise re-pull the
+  // previous turn's rows before they were linked, and `mergeMessagesById` —
+  // matching only by id/`canonicalId` — would append them as duplicates of the
+  // previous user+assistant messages. Resolves (never rejects) when settled.
+  const pendingReconcileRef = useRef<Promise<void> | null>(null);
   const drainQueueRef = useRef<(() => void) | null>(null);
   // The dispatch fn closes over `transport`; keep the latest in a ref so the
   // stable queue/drain machinery never dispatches against a stale destination.
@@ -195,6 +203,13 @@ export function useChatThread(opts: {
     const generation = syncGenerationRef.current;
     const run = (async (): Promise<{ offline: boolean }> => {
       try {
+        // Let the previous turn's reconcile settle first so its canonical ids
+        // are linked onto the optimistic rows and its cursor is persisted.
+        // Otherwise this pull (e.g. the next, queued turn's wake→sync firing
+        // the instant the prior turn finished) would re-fetch the previous
+        // turn's rows against a stale cursor and duplicate them.
+        const pendingReconcile = pendingReconcileRef.current;
+        if (pendingReconcile) await pendingReconcile;
         const expectedConversationId = syncConversationIdRef.current;
         const sinceCursor = syncCursorRef.current;
         const next = await syncDesktopBridgeChatMessages({
@@ -233,6 +248,7 @@ export function useChatThread(opts: {
   useEffect(() => {
     didMountSyncRef.current = false;
     desktopSyncRef.current = null;
+    pendingReconcileRef.current = null;
     return () => {
       syncGenerationRef.current += 1;
     };
@@ -430,7 +446,7 @@ export function useChatThread(opts: {
         // resolves after the paired computer/thread changed (or the surface
         // unmounted) can't persist a stale cursor or merge the old transcript.
         const reconcileGeneration = syncGenerationRef.current;
-        void syncDesktopBridgeChatMessages({
+        const reconcilePromise = syncDesktopBridgeChatMessages({
           access,
           expectedConversationId: syncConversationIdRef.current,
           sinceCursor: syncConversationIdRef.current
@@ -463,6 +479,16 @@ export function useChatThread(opts: {
             // The optimistic local turn is already rendered; the next sync
             // will reconcile with canonical desktop message ids.
           });
+        // Publish the reconcile so the next sync (notably a queued send
+        // draining right now) waits for these rows to be linked + the cursor
+        // advanced before it pulls, instead of re-fetching and duplicating
+        // them. Clear it once settled so it never blocks later syncs.
+        pendingReconcileRef.current = reconcilePromise;
+        void reconcilePromise.finally(() => {
+          if (pendingReconcileRef.current === reconcilePromise) {
+            pendingReconcileRef.current = null;
+          }
+        });
         notifySuccess();
         finishDispatch();
       } catch (e) {
