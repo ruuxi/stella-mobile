@@ -409,7 +409,12 @@ const makeStyles = (colors: Colors) =>
       justifyContent: "flex-start",
       overflow: "visible",
       paddingBottom: INDICATOR_PAD_BOTTOM,
-      paddingHorizontal: 18,
+      // Inline at the chat tail this row already inherits the list's horizontal
+      // inset, so its creature must hug the left to line up with the assistant
+      // message text rather than floating in with an extra indent. Keep a right
+      // inset only so the status label has room before the edge.
+      paddingLeft: 0,
+      paddingRight: 18,
       paddingTop: INDICATOR_PAD_TOP,
     },
     viewport: {

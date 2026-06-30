@@ -187,6 +187,18 @@ const MESSAGE_LIST_GAP = 20;
  * indicator slot plus a few pt so it reads as a deliberate gap when idle.
  */
 const CHAT_TAIL_GAP = WORKING_INDICATOR_SLOT_HEIGHT + 12;
+/**
+ * The working indicator used to live inside the footer overlay (above the
+ * composer), so its reserved slot height was baked into the measured
+ * `footerHeight` that the floating controls anchor their bottom offset against.
+ * It now rides inline at the chat tail, which shrank `footerHeight` by that
+ * slot height and dropped both floating buttons low enough for the composer to
+ * overlap them. Re-add the slot height to the buttons' bottom anchor so they
+ * sit exactly where they did before the indicator moved, without bringing back
+ * the fixed indicator. `footerHeight` still includes the composer's safe-area
+ * inset, so the buttons keep clearing the home indicator.
+ */
+const FLOATING_CONTROL_LIFT = WORKING_INDICATOR_SLOT_HEIGHT;
 /** Cancels the shell `content` padding so chat owns its horizontal inset. */
 const SHELL_CONTENT_PADDING = 20;
 /** Horizontal inset from the true screen edge once shell padding is cancelled. */
@@ -2453,7 +2465,7 @@ export function ChatPane({
               onPress={scroll.scrollToBottom}
               styles={styles}
               colors={colors}
-              bottomOffset={footerHeight - 24}
+              bottomOffset={footerHeight + FLOATING_CONTROL_LIFT - 24}
             />
           ) : null}
           {hasFloatingMenu && !searchOpen ? (
@@ -2464,7 +2476,7 @@ export function ChatPane({
               style={[
                 styles.floatingMenuButton,
                 {
-                  bottom: footerHeight - 20,
+                  bottom: footerHeight + FLOATING_CONTROL_LIFT - 20,
                   // See ScrollToBottomFab: never fade a Liquid Glass ancestor's
                   // opacity (it drops the material). Fade only on the fallback;
                   // on glass the material fades via `present` and the icon below.
