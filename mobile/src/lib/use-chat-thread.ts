@@ -585,11 +585,31 @@ export function useChatThread(opts: {
       setWorkingActivity(IDLE_WORKING_ACTIVITY);
       // Promote the queued bubble out of the dimmed state and add an empty
       // assistant placeholder beside it.
+      const dispatchedAt = Date.now();
       setMessages((m) => [
-        ...m.map((msg) =>
-          msg.id === item.userMessageId ? { ...msg, queued: false } : msg,
-        ),
-        { id: replyId, role: "assistant" as const, text: "", createdAt: Date.now() },
+        ...m.map((msg) => {
+          if (msg.id !== item.userMessageId) return msg;
+          // Re-stamp a *queued* bubble to its real dispatch time. Its original
+          // `createdAt` is the enqueue moment (when the user tapped send while
+          // the prior turn was still streaming); any messages that landed
+          // during that wait carry later timestamps, so leaving the enqueue
+          // time would let `sortByCreatedAt` slot this row into the past, above
+          // those interleaved messages, instead of where it was actually sent.
+          // An immediate (un-queued) send already dispatches at creation time,
+          // so it keeps its original stamp. The local merge
+          // (`mergeMessagesById`) and post-turn reconcile
+          // (`reconcileSentDesktopTurn`) both preserve this local `createdAt`,
+          // so the row holds this position when sync reconciles.
+          return msg.queued
+            ? { ...msg, queued: false, createdAt: dispatchedAt }
+            : { ...msg, queued: false };
+        }),
+        {
+          id: replyId,
+          role: "assistant" as const,
+          text: "",
+          createdAt: dispatchedAt,
+        },
       ]);
 
       if (transport.kind === "desktop") {
