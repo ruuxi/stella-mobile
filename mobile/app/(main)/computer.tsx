@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { useIsFocused } from "expo-router";
 import { isGuest } from "../../src/lib/guest-mode";
 import { SignInPrompt } from "../../src/components/SignInPrompt";
@@ -31,6 +31,11 @@ const STATUS_POLL_MS = 20_000;
 /** Faster cadence while a wake request is in flight. */
 const WAKE_POLL_MS = 3_000;
 const WAKE_WINDOW_MS = 30_000;
+/**
+ * Collapses a focus + AppState "active" pair firing on the same return into a
+ * single connect-or-sync action so we don't double-fire the resume handler.
+ */
+const RESUME_DEBOUNCE_MS = 1_500;
 
 type DeviceStatus = {
   checking: boolean;
@@ -270,6 +275,75 @@ function ComputerChatSurface({
       triggerWake();
     }
   }, [isFocused, offline, status.available, waking, triggerWake]);
+
+  // Returning to this surface "later" — either by foregrounding the app
+  // (AppState → active) or navigating back onto the computer tab (focus
+  // transition) — must self-heal the connection. The transport is
+  // request/response, not a live socket: while the app is backgrounded the
+  // ~20s status poll is throttled, so a connection that dropped meanwhile is
+  // never re-attempted, and a tab that stayed focused across a
+  // background/foreground cycle fires no focus transition for the existing
+  // auto-wake effect to catch. On return we re-check status immediately, then:
+  // if the desktop is asleep, re-run the SAME wake handshake; if it is up, run
+  // a catch-up `runDesktopSync()` so a phone that went stale in the background
+  // pulls any desktop turns it missed.
+  const runDesktopSync = thread.runDesktopSync;
+  const offlineRef = useRef(offline);
+  const wakingRef = useRef(waking);
+  const isFocusedRef = useRef(isFocused);
+  useEffect(() => {
+    offlineRef.current = offline;
+    wakingRef.current = waking;
+    isFocusedRef.current = isFocused;
+  }, [offline, waking, isFocused]);
+
+  const lastResumeRef = useRef(0);
+  const reconnectOrSync = useCallback(async () => {
+    // Only act when this paired-desktop surface is the one the user is on, so
+    // we never wake a computer the user isn't looking at.
+    if (!isFocusedRef.current) return;
+    // Debounce so a focus + AppState pair on the same return acts once.
+    const now = Date.now();
+    if (now - lastResumeRef.current < RESUME_DEBOUNCE_MS) return;
+    lastResumeRef.current = now;
+    // Re-check now instead of waiting on the throttled poll, then act on the
+    // fresh read using the existing connection-status signal.
+    const available = await checkStatus(access.desktopDeviceId);
+    if (available) {
+      // Connected: cheap delta pull (matching cursors are a no-op);
+      // runDesktopSync coalesces in-flight runs so syncs never stack.
+      void runDesktopSync();
+      return;
+    }
+    // Disconnected: re-attempt the same wake handshake, guarded by the shared
+    // autoWokeRef so we don't spam the handshake or stack a second attempt.
+    if (!offlineRef.current && !wakingRef.current && !autoWokeRef.current) {
+      autoWokeRef.current = true;
+      triggerWake();
+    }
+  }, [checkStatus, access.desktopDeviceId, runDesktopSync, triggerWake]);
+
+  // Mirror into a ref so the once-mounted AppState subscription always invokes
+  // the latest closure without re-subscribing.
+  const reconnectOrSyncRef = useRef(reconnectOrSync);
+  useEffect(() => {
+    reconnectOrSyncRef.current = reconnectOrSync;
+  }, [reconnectOrSync]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") void reconnectOrSyncRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Fire on the focus false → true transition (navigating back onto the tab).
+  const wasFocusedRef = useRef(isFocused);
+  useEffect(() => {
+    const wasFocused = wasFocusedRef.current;
+    wasFocusedRef.current = isFocused;
+    if (isFocused && !wasFocused) void reconnectOrSync();
+  }, [isFocused, reconnectOrSync]);
 
   const platformLabel = status.platform?.trim() || "Your computer";
   const statusLabel = status.checking

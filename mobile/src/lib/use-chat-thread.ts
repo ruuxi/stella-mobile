@@ -97,6 +97,12 @@ export type ChatThread = {
   conversationTasks: MobileTask[];
   send: () => void;
   stop: () => void;
+  /**
+   * Coalesced wake + pull + merge against the canonical desktop rows. A no-op
+   * for the cloud transport; safe to call repeatedly (in-flight runs are
+   * shared) so resume/focus catch-up syncs never stack.
+   */
+  runDesktopSync: () => Promise<{ offline: boolean }>;
 };
 
 /**
@@ -737,5 +743,6 @@ export function useChatThread(opts: {
     conversationTasks,
     send,
     stop,
+    runDesktopSync,
   };
 }
